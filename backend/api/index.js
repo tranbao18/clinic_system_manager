@@ -4,9 +4,7 @@ dotenv.config();
 import connectDB from '../src/config/db.js';
 import app from '../server.js';
 
-// Vercel Serverless Function cần kết nối database khi instance được khởi tạo
-connectDB().catch((err) => {
-  console.error("Vercel Serverless DB Connection Error:", err);
-});
+// Đảm bảo DB được kết nối xong TRƯỚC KHI Vercel nhận bất kỳ request nào
+await connectDB();
 
 export default app;
