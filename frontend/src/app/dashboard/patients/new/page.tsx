@@ -30,7 +30,7 @@ export default function AddPatientPage() {
         const data = await res.json();
         const r = (data?.user?.role || "").toLowerCase();
         setRole(r);
-        if (r && r !== "receptionist") {
+        if (r && r !== "receptionist" && r !== "admin") {
           router.push("/dashboard/patients");
         }
       } catch {
