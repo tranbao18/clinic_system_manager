@@ -1,5 +1,4 @@
 import bcrypt from "bcryptjs";
-import mongoose from "mongoose";
 
 import UserDAO from '../dao/user.dao.js';
 import EmployeeDAO from '../dao/employee.dao.js';
@@ -7,33 +6,23 @@ import PatientDAO from '../dao/patient.dao.js';
 
 class AuthController {
   async register(req, res) {
-    const session = await mongoose.startSession();
-
     try {
       const { role, employee } = req.body;
 
-      session.startTransaction();
+      const createdEmployee = await EmployeeDAO.createEmployee(employee);
 
-
-      const createdEmployee = await EmployeeDAO.createEmployee(employee, session);
-
-      const createdUser = await UserDAO.register(role, createdEmployee, session);
-
-      await session.commitTransaction();
+      const createdUser = await UserDAO.register(role, createdEmployee);
 
       return res.status(201).json({
         user: createdUser,
         employee: createdEmployee
       });
     } catch (err) {
-      await session.abortTransaction();
       console.error('AuthController.register error:', err);
       if (err.message && err.message.includes('đã được sử dụng')) {
         return res.status(400).json({ error: err.message });
       }
       return res.status(500).json({ error: err.message });
-    } finally {
-      session.endSession();
     }
   };
 
@@ -124,8 +113,6 @@ class AuthController {
 
   // Kế thừa
   async updateAccount(req, res) {
-    const session = await mongoose.startSession();
-
     try {
       const requester = req.user || {};
       const requesterId = requester.sub || requester.userId || requester._id;
@@ -134,11 +121,8 @@ class AuthController {
         return res.status(403).json({ message: 'Không có quyền cập nhật tài khoản này' });
       }
 
-      session.startTransaction();
-
-      const userObj = await UserDAO.findById(req.params.id, session);
+      const userObj = await UserDAO.findById(req.params.id);
       if (!userObj) {
-        await session.abortTransaction();
         return res.status(404).json({ message: 'User not found' });
       }
 
@@ -152,12 +136,9 @@ class AuthController {
       if (userObj.employee_id && Object.keys(employeeUpdate).length > 0) {
         updatedEmployee = await EmployeeDAO.update(
           userObj.employee_id,
-          employeeUpdate,
-          session
+          employeeUpdate
         );
       }
-
-      await session.commitTransaction();
 
       const freshUser = await UserDAO.findById(req.params.id);
       const freshEmployee =
@@ -167,12 +148,8 @@ class AuthController {
       return res.status(200).json({ user: freshUser, employee: freshEmployee });
 
     } catch (err) {
-      await session.abortTransaction();
       console.error('updateAccount error:', err);
       return res.status(500).json({ error: err.message });
-
-    } finally {
-      session.endSession();
     }
   };
   //
@@ -187,15 +164,11 @@ class AuthController {
   };
 
   async registerPatient(req, res) {
-    const session = await mongoose.startSession();
-
     try {
       const { username, password, patient } = req.body;
 
-      session.startTransaction();
-
       // Tạo patient
-      const createdPatient = await PatientDAO.create(patient, session);
+      const createdPatient = await PatientDAO.create(patient);
 
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = await UserDAO.create({
@@ -203,9 +176,7 @@ class AuthController {
         password_hash: hashedPassword,
         role: 'Patient',
         patient_id: createdPatient._id
-      }, session);
-
-      await session.commitTransaction();
+      });
 
       return res.status(201).json({
         user,
@@ -213,11 +184,7 @@ class AuthController {
       });
 
     } catch (err) {
-      await session.abortTransaction();
       return res.status(500).json({ error: err.message });
-
-    } finally {
-      session.endSession();
     }
   };
 

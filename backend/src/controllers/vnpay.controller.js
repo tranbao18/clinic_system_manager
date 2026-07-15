@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 import vnpay from '../utils/vnpay.js';
 import paymentDao from '../dao/payment.dao.js';
 import invoiceDao from '../dao/invoice.dao.js';
@@ -74,34 +72,25 @@ class VNPayController {
     }
 
     async returnUrl(req, res) {
-        const session = await mongoose.startSession();
-        session.startTransaction();
-
         try {
             const result = vnpay.verifyReturnUrl(req.query);
             const invoice_id = result.orderId;
             const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
             if (!result.isValid || result.responseCode !== '00' || result.transactionStatus !== '00') {
-            await session.abortTransaction();
-            session.endSession();
             return res.redirect(`${frontendUrl}/dashboard/invoices/${invoice_id}?payment=failed`);
             }
 
             const existingPayment = await Payment.findOne(
-            { invoice_id, method: 'VNPay', disabled: false },
-            null,
-            { session }
+            { invoice_id, method: 'VNPay', disabled: false }
             );
 
             if (!existingPayment) {
-            const invoice = await invoiceDao.findById(invoice_id, session);
+            const invoice = await invoiceDao.findById(invoice_id);
             if (!invoice) throw new Error('Invoice not found');
 
             const payments = await Payment.find(
-                { invoice_id, disabled: false },
-                null,
-                { session }
+                { invoice_id, disabled: false }
             );
             const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
             const remaining = invoice.total_amount - totalPaid;
@@ -115,23 +104,18 @@ class VNPayController {
                 method: 'VNPay',
                 amount: result.amount,
                 date: new Date()
-            }, session);
+            });
 
             const newTotal = totalPaid + result.amount;
             const newStatus =
                 newTotal >= invoice.total_amount ? 'Paid' :
                 newTotal > 0 ? 'Partial' : 'Unpaid';
 
-            await invoiceDao.update(invoice_id, { status: newStatus }, session);
+            await invoiceDao.update(invoice_id, { status: newStatus });
             }
-
-            await session.commitTransaction();
-            session.endSession();
 
             return res.redirect(`${frontendUrl}/dashboard/invoices/${invoice_id}?payment=success`);
         } catch (err) {
-            await session.abortTransaction();
-            session.endSession();
             console.error('VNPay returnUrl error:', err);
             return res.redirect(
             `${process.env.FRONTEND_URL}/dashboard/invoices/${req.query.vnp_TxnRef}?payment=failed`
@@ -140,25 +124,19 @@ class VNPayController {
     }
 
     async ipnUrl(req, res) {
-        const session = await mongoose.startSession();
-        session.startTransaction();
-
         try {
             const result = vnpay.verifyReturnUrl(req.query);
             if (!result.isValid) {
-            await session.abortTransaction();
             return res.status(400).json({ RspCode: '97', Message: 'Invalid signature' });
             }
 
             const invoice_id = result.orderId;
-            const invoice = await invoiceDao.findById(invoice_id, session);
+            const invoice = await invoiceDao.findById(invoice_id);
             if (!invoice) throw new Error('Invoice not found');
 
             if (result.transactionStatus === '00' && result.responseCode === '00') {
             const existingPayment = await Payment.findOne(
-                { invoice_id, method: 'VNPay', disabled: false },
-                null,
-                { session }
+                { invoice_id, method: 'VNPay', disabled: false }
             );
 
             if (!existingPayment) {
@@ -167,18 +145,14 @@ class VNPayController {
                 method: 'VNPay',
                 amount: result.amount,
                 date: new Date()
-                }, session);
+                });
 
-                await invoiceDao.update(invoice_id, { status: 'Paid' }, session);
+                await invoiceDao.update(invoice_id, { status: 'Paid' });
             }
             }
 
-            await session.commitTransaction();
-            session.endSession();
             return res.status(200).json({ RspCode: '00', Message: 'Success' });
         } catch (err) {
-            await session.abortTransaction();
-            session.endSession();
             console.error('VNPay ipnUrl error:', err);
             return res.status(500).json({ RspCode: '99', Message: err.message });
         }

@@ -1,14 +1,9 @@
-import mongoose from 'mongoose';
-
 import MedicineDAO from '../dao/medicine.dao.js';
 import MedicineImportDAO from '../dao/medicine-import.dao.js';
 import PurchaseTransactionDAO from '../dao/purchase-transaction.dao.js';
 
 class MedicineService {
     async importMedicines(medicines) {
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
       const results = {
         success: 0,
         failed: 0,
@@ -62,7 +57,7 @@ class MedicineService {
             const existing = await MedicineDAO.model.findOne({
               name: { $regex: new RegExp(`^${escapeRegex(medicine.name)}$`, "i") },
               disabled: false,
-            }).session(session);
+            });
 
             if (existing) {
               results.skipped++;
@@ -81,7 +76,7 @@ class MedicineService {
               category: medicine.category,
               unit: medicine.unit,
               price: medicine.price,
-            }, session);
+            });
 
             results.success++;
           } catch (err) {
@@ -95,14 +90,10 @@ class MedicineService {
           }
         }
 
-        await session.commitTransaction();
         return results;
 
       } catch (err) {
-        await session.abortTransaction();
         throw err;
-      } finally {
-        session.endSession();
       }
   }
 
@@ -110,7 +101,7 @@ class MedicineService {
     if (hard) {
       await MedicineImportDAO.model.deleteMany({ medicine_id: medicineId });
       await PurchaseTransactionDAO.model.deleteMany({ medicine_id: medicineId });
-      return MedicineDAO.hardDelete(patientId);
+      return MedicineDAO.hardDelete(medicineId);
     }
 
     await MedicineImportDAO.model.updateMany(

@@ -12,7 +12,7 @@ import InvoiceService from '../services/invoice.service.js';
  * @param {Object} prescription - Prescription object với medicine_id và quantity
  * @returns {Promise<void>}
  */
-async function deductMedicineFromInventory(prescription, session) {
+async function deductMedicineFromInventory(prescription) {
   // Xử lý medicine_id có thể là object (khi populate) hoặc string/ObjectId
   let medicineId = prescription.medicine_id;
   if (medicineId && typeof medicineId === 'object') {
@@ -52,7 +52,7 @@ async function deductMedicineFromInventory(prescription, session) {
     disabled: false,
     remaining: { $gt: 0 },
     expiry_date: { $gte: new Date() } // Chỉ lấy thuốc chưa hết hạn
-  }).session(session)
+  })
     .sort({ expiry_date: 1, import_date: 1 }) // Sắp xếp theo hạn sử dụng (sớm nhất trước), sau đó theo ngày nhập
     .exec();
 
@@ -121,8 +121,7 @@ async function deductMedicineFromInventory(prescription, session) {
       const newRemaining = availableInThisBatch - deductFromThisBatch;
       await MedicineImport.findByIdAndUpdate(
         importItem._id,
-        { remaining: newRemaining, updated_at: new Date() },
-        { session }
+        { remaining: newRemaining, updated_at: new Date() }
       );
 
       remainingToDeduct -= deductFromThisBatch;
@@ -154,17 +153,12 @@ class InvoiceController {
 
   // Kế thừa
   async createFromMedicalRecord(req, res) {
-    const session = await mongoose.startSession();
-
     try {
-      session.startTransaction();
-
       const { medicalRecordId } = req.params;
 
       // Lấy medical record với đầy đủ thông tin
       const medicalRecord = await medicalRecordDao.model
         .findOne({ _id: medicalRecordId, disabled: false })
-        .session(session)
         .populate('patient_id')
         .populate('appointment_id')
         .populate('prescriptions.medicine_id', 'name unit price')
@@ -222,7 +216,7 @@ class InvoiceController {
             quantity: prescription.quantity
           });
 
-          await deductMedicineFromInventory(prescription, session);
+          await deductMedicineFromInventory(prescription);
         } catch (err) {
           console.error('❌ [createFromMedicalRecord] Lỗi khi trừ thuốc từ kho:', err);
           console.error('❌ [createFromMedicalRecord] Chi tiết lỗi:', {
@@ -243,9 +237,7 @@ class InvoiceController {
         status: 'Unpaid'
       };
 
-      const result = await dao.create(invoiceData, session);
-
-      await session.commitTransaction();
+      const result = await dao.create(invoiceData);
 
       const populatedInvoice = await dao.model
         .findById(result._id)
@@ -279,12 +271,8 @@ class InvoiceController {
 
       res.status(201).json(populatedInvoice);
     } catch (err) {
-        await session.abortTransaction();
         return res.status(500).json({ error: err.message });
-
-      } finally {
-        session.endSession();
-      }
+    }
   };
   //
 

@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 import Medicine from '../models/medicine.model.js';
 import MedicineImport from '../models/medicine-import.model.js';
 import Employee from '../models/employee.model.js';
@@ -7,9 +5,6 @@ import dao from '../dao/medicine-import.dao.js';
 
 class MedicineImportService {
   static async importWithTransaction({ imports, user }) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     const results = {
       success: 0,
       failed: 0,
@@ -45,22 +40,20 @@ class MedicineImportService {
           let medicine = await Medicine.findOne({
             name: new RegExp(`^${importData.medicineName}$`, 'i'),
             disabled: false
-          }).session(session);
+          });
 
           if (!medicine) {
             if (!importData.unit || !importData.price) {
               throw new Error(`Thiếu thông tin tạo thuốc mới (dòng ${importData.rowNumber})`);
             }
 
-            medicine = await Medicine.create([{
+            medicine = await Medicine.create({
               name: importData.medicineName,
               category: importData.category || [],
               unit: importData.unit,
               price: importData.price,
               disabled: false
-            }], { session });
-
-            medicine = medicine[0];
+            });
           }
 
           // ========= FIND EMPLOYEE =========
@@ -68,7 +61,7 @@ class MedicineImportService {
           if (importData.importerName) {
             const emp = await Employee.findOne({
               fullname: importData.importerName
-            }).session(session);
+            });
 
             if (!emp) {
               throw new Error(`Không tìm thấy người nhập (dòng ${importData.rowNumber})`);
@@ -81,7 +74,7 @@ class MedicineImportService {
             medicine_id: medicine._id,
             supplier: new RegExp(`^${importData.supplier}$`, 'i'),
             disabled: false
-          }).session(session);
+          });
 
           if (existed) {
             results.skipped++;
@@ -99,7 +92,7 @@ class MedicineImportService {
             expiry_date: importData.expiry_date,
             import_date: importData.import_date,
             imported_by: importedBy
-          }, session);
+          });
 
           results.success++;
         } catch (err) {
@@ -112,14 +105,10 @@ class MedicineImportService {
         }
       }
 
-      await session.commitTransaction();
       return results;
 
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 }

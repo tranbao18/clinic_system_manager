@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 import PatientDAO from '../dao/patient.dao.js';
 import AppointmentDAO from '../dao/appointment.dao.js';
 import MedicalRecordDAO from '../dao/medical-record.dao.js';
@@ -8,98 +6,70 @@ import InvoiceDAO from '../dao/invoice.dao.js';
 
 class PatientService {
   async deleteCascade(patientId, hard = false) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
       if (hard) {
-        await AppointmentDAO.model.deleteMany({ patient_id: patientId }, { session });
-        await MedicalRecordDAO.model.deleteMany({ patient_id: patientId }, { session });
-        await UserDAO.model.deleteMany({ patient_id: patientId }, { session });
-        // Nếu sau này bật lại invoice hard delete thì thêm vào đây
-        // await InvoiceDAO.model.deleteMany({ patient_id: patientId }, { session });
+        await AppointmentDAO.model.deleteMany({ patient_id: patientId });
+        await MedicalRecordDAO.model.deleteMany({ patient_id: patientId });
+        await UserDAO.model.deleteMany({ patient_id: patientId });
 
-        const result = await PatientDAO.hardDelete(patientId, session);
-
-        await session.commitTransaction();
+        const result = await PatientDAO.hardDelete(patientId);
         return result;
       }
 
       // ===== SOFT DELETE =====
       await AppointmentDAO.model.updateMany(
         { patient_id: patientId, disabled: false },
-        { disabled: true },
-        { session }
+        { disabled: true }
       );
 
       await MedicalRecordDAO.model.updateMany(
         { patient_id: patientId, disabled: false },
-        { disabled: true },
-        { session }
+        { disabled: true }
       );
 
       await UserDAO.model.updateMany(
         { patient_id: patientId, disabled: false },
-        { disabled: true },
-        { session }
+        { disabled: true }
       );
 
       await InvoiceDAO.model.updateMany(
         { patient_id: patientId, disabled: false },
-        { disabled: true },
-        { session }
+        { disabled: true }
       );
 
-      const result = await PatientDAO.delete(patientId, session);
-
-      await session.commitTransaction();
+      const result = await PatientDAO.delete(patientId);
       return result;
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 
   async restoreCascade(patientId) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
       await AppointmentDAO.model.updateMany(
         { patient_id: patientId, disabled: true },
-        { disabled: false },
-        { session }
+        { disabled: false }
       );
 
       await MedicalRecordDAO.model.updateMany(
         { patient_id: patientId, disabled: true },
-        { disabled: false },
-        { session }
+        { disabled: false }
       );
 
       await UserDAO.model.updateMany(
         { patient_id: patientId, disabled: true },
-        { disabled: false },
-        { session }
+        { disabled: false }
       );
 
       await InvoiceDAO.model.updateMany(
         { patient_id: patientId, disabled: true },
-        { disabled: false },
-        { session }
+        { disabled: false }
       );
 
-      const result = await PatientDAO.restore(patientId, session);
-
-      await session.commitTransaction();
+      const result = await PatientDAO.restore(patientId);
       return result;
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 }
