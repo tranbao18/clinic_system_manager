@@ -17,7 +17,8 @@ import paymentRoutes from "./src/routes/payment.routes.js";
 import vnpayRoutes from "./src/routes/vnpay.routes.js";
 import reportRoutes from "./src/routes/report.route.js";
 import notificationRoutes from "./src/routes/notification.routes.js";
-
+import User from './src/models/user.model.js';
+import bcrypt from 'bcryptjs';
 const app = express()
 
 app.use(cors())
@@ -26,7 +27,33 @@ app.use(express.json())
 app.get('/', (req, res) => {
   console.log(req.headers)
   res.send('<h1>Backend here!</h1>')
-})
+});
+
+app.get('/api/seed-admin-temp', async (req, res) => {
+  try {
+    const adminUsername = 'admin';
+    const adminPassword = '651347';
+
+    let adminUser = await User.findOne({ username: adminUsername });
+    const salt = await bcrypt.genSalt(10);
+    const password_hash = await bcrypt.hash(adminPassword, salt);
+    if (adminUser) {
+      adminUser.password_hash = password_hash;
+      await adminUser.save();
+      return res.send('Admin updated successfully');
+    } else {
+      adminUser = new User({
+        username: adminUsername,
+        password_hash: password_hash,
+        role: 'Admin',
+      });
+      await adminUser.save();
+      return res.send('Admin created successfully');
+    }
+  } catch (err) {
+    return res.status(500).send(err.message);
+  }
+});
 
 // Sử dụng routes
 app.use("/api/auth", authRoutes);
