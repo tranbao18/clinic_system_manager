@@ -529,8 +529,8 @@ export default function InvoiceDetailPage() {
                                 }
                             }}
                         >
-                            <Option value="VNPay">VNPay (Web)</Option>
-                            <Option value="VNPayQR">VNPay (QR Code)</Option>
+                            <Option value="VNPay" disabled>VNPay (Web) - Đang bảo trì</Option>
+                            <Option value="VNPayQR" disabled>VNPay (QR Code) - Đang bảo trì</Option>
                             <Option value="Cash">Tiền mặt</Option>
                         </Select>
                     </Form.Item>
