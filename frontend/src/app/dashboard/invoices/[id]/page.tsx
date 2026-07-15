@@ -300,13 +300,13 @@ export default function InvoiceDetailPage() {
         try {
             setProcessingQR(true);
             const result = await createVNPayQR({ invoice_id: id });
-            if (result.qrData) {
+            if (result.paymentUrl) {
                 setQrCodeData(result.paymentUrl);
                 setIsQRModalVisible(true);
                 // initialize previous payments count
                 prevPaymentsCountRef.current = payments.length;
             } else {
-                throw new Error('Không nhận được QR code từ server');
+                throw new Error('Không nhận được payment URL từ server');
             }
         } catch (error: any) {
             console.error(' Lỗi khi tạo VNPay QR:', error);

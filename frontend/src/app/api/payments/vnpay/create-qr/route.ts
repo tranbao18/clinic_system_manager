@@ -20,7 +20,7 @@ export async function POST(req: Request) {
         const body = await req.json();
         console.log('📤 Request body:', { invoice_id: body.invoice_id });
 
-        const requestUrl = `${BACKEND_URL}/api/payments/vnpay/create-qr`;
+        const requestUrl = `${BACKEND_URL}/api/payments/vnpay/create`;
         console.log('🌐 Request URL:', requestUrl);
 
         const res = await fetch(requestUrl, {
