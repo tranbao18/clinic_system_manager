@@ -10,7 +10,7 @@ router.post('/', auth("Admin"), validator.createEmployee(), validate, ctrl.creat
 
 router.get('/getalldoc', auth("Patient"), ctrl.getAllDoctor);
 router.get('/', auth(["Admin", "Receptionist", "Doctor", "Accountant"]), ctrl.findAll);
-router.get('/:id', auth(process.env.ALLROLE), ctrl.findById);
+router.get('/:id', auth("Admin"), ctrl.findById);
 
 router.put('/:id', auth("Admin"), validator.updateEmployee(), validate, ctrl.update);
 router.delete('/:id', auth("Admin"), ctrl.remove);
