@@ -2,7 +2,17 @@ import jwt from 'jsonwebtoken';
 import TokenBlacklist from '../src/models/token-blacklist.model.js';
 
 const authMiddleware = (roles = []) => {
-  if (typeof roles === 'string') roles = [roles];
+  if (typeof roles === 'string') {
+    if (roles.startsWith('[') && roles.endsWith(']')) {
+      try {
+        roles = JSON.parse(roles.replace(/'/g, '"'));
+      } catch (e) {
+        roles = [roles];
+      }
+    } else {
+      roles = [roles];
+    }
+  }
   return async (req, res, next) => {
     try {
       const authHeader = req.headers.authorization;
