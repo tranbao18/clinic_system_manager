@@ -4,8 +4,8 @@ export default class MedicineImportValidator {
   static createMedicineImport() {
     return [
       body('medicine_id').isMongoId(),
-      body('supplier').isString().matches(/^[\p{L}\s.'-]{2,100}$/u),
-      body('batchcode').isString().matches(/^[\p{L}\s.'-]{2,100}$/u),
+      body('supplier').isString().matches(/^[\p{L}\d\s.'\-/%()#+]{2,100}$/u),
+      body('batchcode').isString().matches(/^[\p{L}\d\s.'\-/%()#+]{2,100}$/u),
       body('quantity').isInt({ gt: 0 }),
       body('unit_price').isFloat({ gt: 0 }),
       body('expiry_date').isISO8601().toDate(),

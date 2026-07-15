@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 import EmployeeDAO from '../dao/employee.dao.js';
 import PayrollDAO from '../dao/payroll.dao.js';
 
@@ -13,25 +11,16 @@ class PayrollImportService {
     };
 
     for (const payroll of payrolls) {
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
       try {
         // 1️⃣ Tìm employee
         let employee = null;
 
         if (payroll.employeeEmail) {
-          employee = await EmployeeDAO.findByEmail(
-            payroll.employeeEmail,
-            session
-          );
+          employee = await EmployeeDAO.findByEmail(payroll.employeeEmail);
         }
 
         if (!employee && payroll.employeeName) {
-          employee = await EmployeeDAO.findByName(
-            payroll.employeeName,
-            session
-          );
+          employee = await EmployeeDAO.findByName(payroll.employeeName);
         }
 
         if (!employee) {
@@ -55,8 +44,7 @@ class PayrollImportService {
         const existed = await PayrollDAO.findByEmployeeAndMonth(
           employee._id,
           month,
-          year,
-          session
+          year
         );
 
         if (existed) {
@@ -67,7 +55,6 @@ class PayrollImportService {
             error: `Đã có bảng lương tháng ${month}/${year}`,
             type: 'skipped'
           });
-          await session.abortTransaction();
           continue;
         }
 
@@ -79,13 +66,11 @@ class PayrollImportService {
           deductions: payroll.deductions,
           net_salary: payroll.net_salary,
           paydate: payroll.paydate
-        }, session);
+        });
 
-        await session.commitTransaction();
         results.success++;
 
       } catch (err) {
-        await session.abortTransaction();
         results.failed++;
         results.errors.push({
           row: payroll.rowNumber,
@@ -93,8 +78,6 @@ class PayrollImportService {
           error: err.message,
           type: 'failed'
         });
-      } finally {
-        session.endSession();
       }
     }
 

@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 import Payment from '../models/payment.model.js';
 import paymentDao from '../dao/payment.dao.js';
 import invoiceDao from '../dao/invoice.dao.js';
@@ -7,19 +5,16 @@ import invoiceDao from '../dao/invoice.dao.js';
 class PaymentService {
   // Kế thừa
   async create(data) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
       const { invoice_id, amount } = data;
 
-      const invoice = await invoiceDao.findById(invoice_id, session);
+      const invoice = await invoiceDao.findById(invoice_id);
       if (!invoice) throw new Error('Hóa đơn không tồn tại');
 
       const payments = await Payment.find({
         invoice_id,
         disabled: false
-      }).session(session);
+      });
 
       const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
       const remaining = invoice.total_amount - totalPaid;
@@ -28,38 +23,31 @@ class PaymentService {
         throw new Error(`Số tiền thanh toán vượt quá số tiền còn lại`);
       }
 
-      const payment = await paymentDao.create(data, session);
+      const payment = await paymentDao.create(data);
 
-      await this.#updateInvoiceStatus(invoice, totalPaid + amount, session);
+      await this.#updateInvoiceStatus(invoice, totalPaid + amount);
 
-      await session.commitTransaction();
       return payment;
 
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 
   async update(id, data) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
-      const current = await paymentDao.findById(id, session);
+      const current = await paymentDao.findById(id);
       if (!current) throw new Error('Thanh toán không tồn tại');
 
       if (data.amount !== undefined && data.amount !== current.amount) {
-        const invoice = await invoiceDao.findById(current.invoice_id, session);
+        const invoice = await invoiceDao.findById(current.invoice_id);
         if (!invoice) throw new Error('Hóa đơn không tồn tại');
 
         const payments = await Payment.find({
           invoice_id: invoice._id,
           disabled: false,
           _id: { $ne: id }
-        }).session(session);
+        });
 
         const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
 
@@ -67,93 +55,72 @@ class PaymentService {
           throw new Error('Số tiền thanh toán vượt quá số tiền còn lại');
         }
 
-        const updated = await paymentDao.update(id, data, session);
-        await this.#updateInvoiceStatus(invoice, totalPaid + data.amount, session);
+        const updated = await paymentDao.update(id, data);
+        await this.#updateInvoiceStatus(invoice, totalPaid + data.amount);
 
-        await session.commitTransaction();
         return updated;
       }
 
-      const updated = await paymentDao.update(id, data, session);
-      await session.commitTransaction();
+      const updated = await paymentDao.update(id, data);
       return updated;
 
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 
   async remove(id) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
-      const payment = await paymentDao.findById(id, session);
+      const payment = await paymentDao.findById(id);
       if (!payment) throw new Error('Thanh toán không tồn tại');
 
-      await paymentDao.delete(id, session);
+      await paymentDao.delete(id);
 
-      const invoice = await invoiceDao.findById(payment.invoice_id, session);
+      const invoice = await invoiceDao.findById(payment.invoice_id);
       if (invoice) {
         const payments = await Payment.find({
           invoice_id: invoice._id,
           disabled: false
-        }).session(session);
+        });
 
         const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-        await this.#updateInvoiceStatus(invoice, totalPaid, session);
+        await this.#updateInvoiceStatus(invoice, totalPaid);
       }
 
-      await session.commitTransaction();
-
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 
   async restore(id) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
-      const payment = await paymentDao.findById(id, session);
+      const payment = await paymentDao.findById(id);
       if (!payment) throw new Error('Thanh toán không tồn tại');
 
-      await paymentDao.restore(id, session);
+      await paymentDao.restore(id);
 
-      const invoice = await invoiceDao.findById(payment.invoice_id, session);
+      const invoice = await invoiceDao.findById(payment.invoice_id);
       if (!invoice) throw new Error('Hóa đơn không tồn tại');
 
       const payments = await Payment.find({
         invoice_id: invoice._id,
         disabled: false
-      }).session(session);
+      });
 
       const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-      await this.#updateInvoiceStatus(invoice, totalPaid, session);
-
-      await session.commitTransaction();
+      await this.#updateInvoiceStatus(invoice, totalPaid);
 
     } catch (err) {
-      await session.abortTransaction();
       throw err;
-    } finally {
-      session.endSession();
     }
   }
 
-  async #updateInvoiceStatus(invoice, totalPaid, session) {
+  async #updateInvoiceStatus(invoice, totalPaid) {
     let status = 'Unpaid';
     if (totalPaid >= invoice.total_amount) status = 'Paid';
     else if (totalPaid > 0) status = 'Partial';
 
-    await invoiceDao.update(invoice._id, { status }, session);
+    await invoiceDao.update(invoice._id, { status });
   }
   //
 }
