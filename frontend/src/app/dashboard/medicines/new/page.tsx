@@ -25,7 +25,7 @@ export default function NewMedicinePage() {
                 const res = await fetch("/api/session", { cache: "no-store" });
                 const data = await res.json();
                 const r = (data?.user?.role || "").toLowerCase();
-                if (r && r !== "admin" && r !== "accountant") {
+                if (r && r !== "admin" && r !== "accountant" && r !== "pharmacist") {
                     message.warning("Bạn không có quyền truy cập trang này");
                     router.push("/dashboard/medicines");
                 }
