@@ -144,7 +144,7 @@ export default function PatientsPage() {
     //
 
     const canDelete = role === "admin";
-    const canCreate = role === "receptionist";
+    const canCreate = role === "admin" || role === "receptionist";
 
     const columns: ColumnsType<Patient> = [
         {
