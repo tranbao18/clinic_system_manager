@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import fieldEncryptPlugin from '../plugins/fieldEncryptPlugin.js';
 const Schema = mongoose.Schema;
 
 const prescriptionSchema = new Schema({
@@ -19,5 +20,8 @@ const medicalRecordSchema = new Schema({
   updated_at: { type: Date, default: Date.now },
   disabled: { type: Boolean, default: false },
 });
+
+// Nội dung khám bệnh là dữ liệu sức khỏe -> mã hóa khi lưu
+medicalRecordSchema.plugin(fieldEncryptPlugin, { fields: ['diagnosis', 'treatment', 'notes'] });
 
 export default mongoose.model('MedicalRecord', medicalRecordSchema);

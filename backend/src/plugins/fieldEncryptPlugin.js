@@ -1,41 +1,19 @@
-import { encryptField, decryptField } from '../utils/cryptoField.js';
+import { encryptString, decryptString } from '../utils/crypto-field.js';
 
-export default function fieldEncryptPlugin(schema, options) {
-  const fields = options.fields || [];
-  const getKey = options.getKey;
-
-  schema.pre('save', async function(next) {
-    try {
-      const key = await getKey();
-      for (const f of fields) {
-        if (!this.isModified(f)) continue;
-        const val = this.get(f);
-        if (val == null) continue;
-        const enc = encryptField(val, key);
-        this.set(f, enc);
-      }
-      next();
-    } catch (err) { next(err); }
-  });
-
-  function decryptDoc(doc) {
-    return (async () => {
-      const key = await getKey();
-      for (const f of fields) {
-        const stored = doc.get ? doc.get(f) : doc[f];
-        if (!stored || !stored.ciphertext) continue;
-        try {
-          const plain = decryptField(stored, key);
-          if (doc.set) doc.set(f, plain);
-          else doc[f] = plain;
-        } catch (e) {
-          console.error('Decrypt failed for field', f, e.message);
-        }
-      }
-    })();
+// Mã hóa các field String khi ghi (create, save, findByIdAndUpdate... đều chạy setter)
+// và giải mã khi đọc (truy cập doc.field, toJSON/toObject).
+// Lưu ý: .lean() và aggregate() bỏ qua getter -> nhận về chuỗi đã mã hóa;
+// không dùng các field này làm điều kiện tìm kiếm (mỗi lần mã hóa cho ra chuỗi khác nhau).
+export default function fieldEncryptPlugin(schema, { fields = [] } = {}) {
+  for (const field of fields) {
+    const path = schema.path(field);
+    if (!path) throw new Error(`fieldEncryptPlugin: không có field "${field}" trong schema`);
+    path.set(encryptString);
+    path.get(decryptString);
   }
 
-  schema.post('init', function() { decryptDoc(this); });
-  schema.post('findOne', function(doc) { if (doc) decryptDoc(doc); });
-  schema.post('find', function(docs) { docs.forEach(d => decryptDoc(d)); });
+  // Bật getter khi serialize; giữ nguyên các option/transform sẵn có, không thêm virtual "id"
+  for (const option of ['toJSON', 'toObject']) {
+    schema.set(option, { ...(schema.get(option) || {}), getters: true, virtuals: false });
+  }
 }
