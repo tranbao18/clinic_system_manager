@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Secrets / env files (keep .env.example as a template)
+.env
+.env.*
+!.env.example
+config.env
+
+# OS junk
+.DS_Store
+Thumbs.db
