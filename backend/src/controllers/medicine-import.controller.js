@@ -7,6 +7,7 @@ import MedicineImport from '../models/medicine-import.model.js';
 import Employee from '../models/employee.model.js';
 import MedicineImportService from '../services/medicine-import.service.js';
 import pickFields from '../utils/pick-fields.js';
+import errorStatus from '../utils/error-status.js';
 import {
   parseVNNumber,
   parseFlexibleDate,
@@ -30,7 +31,7 @@ class MedicineImportController {
       const result = await dao.create(pickFields(req.body, CREATE_FIELDS));
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -43,7 +44,7 @@ class MedicineImportController {
       const result = await dao.findAll(filter);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -53,7 +54,7 @@ class MedicineImportController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -62,7 +63,7 @@ class MedicineImportController {
       const result = await dao.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -71,7 +72,7 @@ class MedicineImportController {
       await dao.delete(req.params.id);
       res.json({ message: 'Deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -80,7 +81,7 @@ class MedicineImportController {
       await dao.restore(req.params.id);
       res.json({ message: 'Restored' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

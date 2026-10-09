@@ -4,6 +4,29 @@ import { getAuthHeaderServer } from "@/lib/authHeaderServer";
 
 const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://meppod.onrender.com";
 
+// Đọc body đúng một lần (tránh lỗi "Body is unusable")
+async function readBody(res: Response): Promise<{ data: any; text: string }> {
+    const text = await res.text();
+    try {
+        return { data: text ? JSON.parse(text) : null, text };
+    } catch {
+        return { data: null, text };
+    }
+}
+
+// Giữ nguyên status và thông điệp lỗi của backend (vd: 403 không phải bác sĩ phụ trách)
+function backendError(status: number, data: any, text: string, fallback: string) {
+    const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    return NextResponse.json(
+        {
+            ...body,
+            error: body.error || body.message || fallback,
+            ...(data === null && text ? { detail: text.slice(0, 500) } : {}),
+        },
+        { status }
+    );
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     try {
         const { id } = await params;
@@ -19,17 +42,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
             headers,
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error(`External API (GET medical record ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: "Không tìm thấy hồ sơ y tế", detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không tìm thấy hồ sơ y tế");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? {});
     } catch (err: any) {
         console.error("GET /api/medical-records/[id] exception:", err);
         return NextResponse.json(
@@ -58,17 +77,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             body: JSON.stringify(body),
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error(`External API (PUT medical record ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: `Không thể cập nhật hồ sơ y tế ${id}`, detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không thể cập nhật hồ sơ y tế");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? {});
     } catch (err: any) {
         console.error("PUT /api/medical-records/[id] exception:", err);
         return NextResponse.json(
@@ -97,13 +112,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
             headers,
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error(`External API (DELETE medical record ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: `Không thể xóa hồ sơ y tế ${id}`, detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không thể xóa hồ sơ y tế");
         }
 
         return NextResponse.json({ message: "Xóa hồ sơ y tế thành công" });
@@ -115,4 +127,3 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
         );
     }
 }
-

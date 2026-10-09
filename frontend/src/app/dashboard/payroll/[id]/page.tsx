@@ -74,7 +74,7 @@ export default function PayrollDetailPage() {
           paydate: dayjs(data.paydate),
         });
       } catch (error: any) {
-        message.error("Không thể tải thông tin bảng lương: " + error.message);
+        message.error(error.message || "Không thể tải thông tin bảng lương");
         router.push("/dashboard/payroll");
       } finally {
         setLoading(false);
@@ -100,13 +100,12 @@ export default function PayrollDetailPage() {
       const basicSalaryValue = form.getFieldValue("basic_salary") ?? (payroll?.basic_salary ?? 0);
       const bonusValue = values.bonus ?? form.getFieldValue("bonus") ?? (payroll?.bonus ?? 0);
       const deductionsValue = values.deductions ?? form.getFieldValue("deductions") ?? (payroll?.deductions ?? 0);
-      const computedNetSalary = basicSalaryValue + bonusValue - deductionsValue;
 
+      // Không gửi net_salary: backend tự tính lại (ô "Lương thực nhận" chỉ là xem trước)
       const payload: UpdatePayrollData = {
         basic_salary: basicSalaryValue,
         bonus: bonusValue,
         deductions: deductionsValue,
-        net_salary: computedNetSalary,
       };
 
       const result = await PayrollService.update(id as string, payload, sendEmail);
@@ -132,7 +131,8 @@ export default function PayrollDetailPage() {
         paydate: dayjs(updated.paydate),
       });
     } catch (error: any) {
-      message.error("Lỗi khi cập nhật bảng lương: " + error.message);
+      // Hiển thị thông báo của backend (vd: "Lương thực nhận không được âm")
+      message.error(error.message || "Lỗi khi cập nhật bảng lương");
     } finally {
       setSaving(false);
     }

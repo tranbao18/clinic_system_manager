@@ -1,98 +1,33 @@
 // KẾ THỪA
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthHeaderServer } from "@/lib/authHeaderServer";
+import { NextRequest } from "next/server";
+import { getSearch, proxyToBackend, proxyWithJsonBody } from "@/lib/backendProxy";
 
-const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://meppod.onrender.com";
-const MEDICINES_URL = `${API_URL}/api/medicines`;
+type Params = { params: Promise<{ id: string }> };
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    try {
-        const { id } = await params;
-        const authHeaders = await getAuthHeaderServer();
-        const headers: Record<string, string> = {};
-
-        if (authHeaders.Authorization) {
-            headers.Authorization = authHeaders.Authorization;
-        }
-
-        const res = await fetch(`${MEDICINES_URL}/${id}`, { cache: "no-store", headers });
-        if (!res.ok) {
-            const text = await res.text();
-            console.error(`External API (GET medicine ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: "Không tìm thấy thuốc", detail: text },
-                { status: res.status }
-            );
-        }
-
-        const data = await res.json();
-        return NextResponse.json(data);
-    } catch (err: any) {
-        console.error("GET /api/medicines/[id] exception:", err);
-        return NextResponse.json({ error: err.message || "Lỗi hệ thống" }, { status: 500 });
-    }
+export async function GET(_req: NextRequest, { params }: Params) {
+    const { id } = await params;
+    return proxyToBackend({
+        path: `/api/medicines/${encodeURIComponent(id)}`,
+        errorMessage: "Không tìm thấy thuốc",
+    });
 }
 
-export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    try {
-        const { id } = await params;
-        const body = await req.json();
-        const authHeaders = await getAuthHeaderServer();
-        const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-        };
-
-        if (authHeaders.Authorization) {
-            headers.Authorization = authHeaders.Authorization;
-        }
-
-        const res = await fetch(`${MEDICINES_URL}/${id}`, {
-            method: "PUT",
-            headers,
-            body: JSON.stringify(body),
-        });
-
-        if (!res.ok) {
-            const text = await res.text();
-
-            console.error(`External API (PUT medicine ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: `Không thể cập nhật thuốc ${id}`, detail: text },
-                { status: res.status }
-            );
-        }
-
-        const data = await res.json();
-        return NextResponse.json(data);
-    } catch (err: any) {
-        console.error("PUT /api/medicines/[id] exception:", err);
-        return NextResponse.json({ error: err.message || "Lỗi hệ thống" }, { status: 500 });
-    }
+export async function PUT(req: NextRequest, { params }: Params) {
+    const { id } = await params;
+    return proxyWithJsonBody(req, {
+        path: `/api/medicines/${encodeURIComponent(id)}`,
+        method: "PUT",
+        errorMessage: "Không thể cập nhật thuốc",
+    });
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    try {
-        const { id } = await params;
-        const authHeaders = await getAuthHeaderServer();
-        const headers: Record<string, string> = {};
-
-        if (authHeaders.Authorization) {
-            headers.Authorization = authHeaders.Authorization;
-        }
-
-        const res = await fetch(`${MEDICINES_URL}/${id}`, { method: "DELETE", headers });
-        if (!res.ok) {
-            const text = await res.text();
-            console.error(`External API (DELETE medicine ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: `Không thể xóa thuốc ${id}`, detail: text },
-                { status: res.status }
-            );
-        }
-        return NextResponse.json({ message: "Xóa thuốc thành công" });
-    } catch (err: any) {
-        console.error("DELETE /api/medicines/[id] exception:", err);
-        return NextResponse.json({ error: err.message || "Lỗi hệ thống" }, { status: 500 });
-    }
+// Chuyển tiếp ?hard=true (xóa vĩnh viễn); không có query là xóa mềm
+export async function DELETE(req: NextRequest, { params }: Params) {
+    const { id } = await params;
+    return proxyToBackend({
+        path: `/api/medicines/${encodeURIComponent(id)}`,
+        method: "DELETE",
+        search: getSearch(req),
+        errorMessage: "Không thể xóa thuốc",
+    });
 }
-

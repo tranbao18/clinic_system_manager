@@ -40,7 +40,11 @@ type Appointment = {
   status: "Scheduled" | "Cancelled" | "Pending" | "Completed" | string;
   reason: string;
   createdAt: string;
+  disabled?: boolean;
 };
+
+// Hai lịch của cùng bác sĩ cách nhau dưới khoảng này được coi là trùng (backend vẫn kiểm tra lại và trả 409)
+const CONFLICT_WINDOW_MS = 15 * 60 * 1000;
 
 type Doctor = {
   _id: string;
@@ -238,10 +242,54 @@ export default function CalendarLayout({
     return `${y}-${m}-${day}`;
   };
 
-  const toLocalDateTimeSeconds = (value: string): string => {
-    if (!value) return value;
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return `${value}:00`;
-    return value;
+  // Giá trị datetime-local là giờ địa phương → gửi ISO UTC đầy đủ cho backend
+  const toUtcIso = (value: string): string => {
+    const d = parseToLocalDate(value);
+    return d ? d.toISOString() : "";
+  };
+
+  const normalizeId = (val: any): string => {
+    if (val == null) return "";
+    if (typeof val === "string") return val;
+    if (typeof val === "object") return val._id ? String(val._id) : "";
+    return String(val);
+  };
+
+  // Tìm lịch trùng của cùng bác sĩ; bỏ qua lịch đã xóa, đã hủy và chính lịch đang sửa
+  const findConflict = (doctorId: string, date: Date, excludeId?: string) => {
+    const targetDoctor = normalizeId(doctorId);
+    return appointments.find((a) => {
+      if (!a.appointmentDate || a.disabled) return false;
+      if (a.status === "Cancelled") return false;
+      if (excludeId && (a.id === excludeId || a._id === excludeId)) return false;
+      if (normalizeId(a.doctor_id) !== targetDoctor) return false;
+      const existingDate = parseToLocalDate(a.appointmentDate);
+      if (!existingDate) return false;
+      return Math.abs(existingDate.getTime() - date.getTime()) < CONFLICT_WINDOW_MS;
+    });
+  };
+
+  const showConflict = (conflictingAppt: Appointment) => {
+    const exDate = parseToLocalDate(conflictingAppt.appointmentDate);
+    const exDisplay = exDate
+      ? exDate.toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })
+      : conflictingAppt.appointmentDate;
+    const docName = conflictingAppt.doctorName || "Bác sĩ";
+    const patientName = conflictingAppt.patientName || "Bệnh nhân";
+    setConflictInfo(
+      `Phát hiện lịch trùng với ${docName} vào ${exDisplay} (bệnh nhân: ${patientName}). Vui lòng chọn thời gian khác.`
+    );
+    setConflictModalOpen(true);
+  };
+
+  // Backend trả 409 khi bác sĩ đã có lịch trong khung giờ đó → hiển thị đúng thông điệp của backend
+  const handleSaveError = (error: any, fallback: string) => {
+    if (error?.status === 409) {
+      setConflictInfo(error.message || "Bác sĩ đã có lịch hẹn trong khung giờ này. Vui lòng chọn thời gian khác.");
+      setConflictModalOpen(true);
+      return;
+    }
+    alert(error?.message || fallback);
   };
 
   const handleEdit = (appointment: Appointment) => {
@@ -274,13 +322,32 @@ export default function CalendarLayout({
       return;
     }
 
+    const newDate = parseToLocalDate(formData.appointment_date);
+    if (!newDate) {
+      alert("Ngày giờ hẹn không hợp lệ");
+      return;
+    }
+
+    // Chỉ kiểm tra trùng khi đổi bác sĩ hoặc giờ hẹn và lịch chưa bị hủy
+    const originalDate = parseToLocalDate(editingAppointment.appointmentDate);
+    const scheduleChanged =
+      normalizeId(formData.doctor_id) !== normalizeId(editingAppointment.doctor_id) ||
+      !originalDate ||
+      originalDate.getTime() !== newDate.getTime();
+    if (scheduleChanged && formData.status !== "Cancelled") {
+      const conflictingAppt = findConflict(formData.doctor_id || "", newDate, editingAppointment.id);
+      if (conflictingAppt) {
+        showConflict(conflictingAppt);
+        return;
+      }
+    }
+
     try {
       setIsSaving(true);
-      const localDateTime = toLocalDateTimeSeconds(formData.appointment_date);
 
       const updateData: UpdateAppointmentData = {
         ...formData,
-        appointment_date: localDateTime,
+        appointment_date: newDate.toISOString(),
         status: formData.status || undefined,
       };
 
@@ -302,7 +369,7 @@ export default function CalendarLayout({
       });
     } catch (error: any) {
       console.error("Error updating appointment:", error);
-      alert(error.message || "Không thể cập nhật lịch hẹn. Vui lòng thử lại.");
+      handleSaveError(error, "Không thể cập nhật lịch hẹn. Vui lòng thử lại.");
     } finally {
       setIsSaving(false);
     }
@@ -340,13 +407,14 @@ export default function CalendarLayout({
         response: error.response
       });
 
-      let errorMessage = "Không thể xóa lịch hẹn. Vui lòng thử lại.";
-      if (error.message.includes("Completed appointment cannot be deleted")) {
+      const rawMessage: string = error?.message || "";
+      let errorMessage = rawMessage || "Không thể xóa lịch hẹn. Vui lòng thử lại.";
+      if (rawMessage.includes("Completed appointment cannot be deleted")) {
         errorMessage = "Không thể xóa lịch hẹn đã hoàn thành.";
-      } else if (error.message.includes("not found")) {
+      } else if (rawMessage.includes("not found")) {
         errorMessage = "Lịch hẹn không tồn tại.";
-      } else if (error.message.includes("permission") || error.message.includes("auth")) {
-        errorMessage = "Bạn không có quyền xóa lịch hẹn này.";
+      } else if (error?.status === 403) {
+        errorMessage = rawMessage || "Bạn không có quyền xóa lịch hẹn này.";
       }
 
       alert(errorMessage);
@@ -393,56 +461,30 @@ export default function CalendarLayout({
       return;
     }
 
+    const newApptDate = parseToLocalDate(formData.appointment_date);
+    if (!newApptDate) {
+      alert("Ngày giờ hẹn không hợp lệ");
+      return;
+    }
+
+    if (formData.status !== "Cancelled") {
+      const conflictingAppt = findConflict(formData.doctor_id, newApptDate);
+      if (conflictingAppt) {
+        showConflict(conflictingAppt);
+        return;
+      }
+    }
+
     try {
       setIsSaving(true);
-      const localDateTime = toLocalDateTimeSeconds(formData.appointment_date);
 
       const createData: CreateAppointmentData = {
         patient_id: formData.patient_id,
         doctor_id: formData.doctor_id,
-        appointment_date: localDateTime,
+        appointment_date: toUtcIso(formData.appointment_date),
         status: formData.status || "Scheduled", // Default là "Scheduled"
         reason: formData.reason || "",
       };
-      // Conflict detection: prevent creating if same doctor has an appointment at the exact time
-      // or within +/- 30 minutes. Uses local-date parsing to avoid timezone mismatches.
-      const newApptDate = parseToLocalDate(createData.appointment_date);
-      const normalizeDoctorId = (val: any) => {
-        if (val == null) return "";
-        if (typeof val === "string") return val;
-        if (typeof val === "object") return String(val._id || val.toString());
-        return String(val);
-      };
-
-      const newDoctorId = normalizeDoctorId(createData.doctor_id);
-      // find conflict appointment (exact or within +/- 15 minutes)
-      const conflictingAppt = appointments.find((a) => {
-        if (!a.appointmentDate) return false;
-        if (a.status === "Cancelled") return false;
-        const aDoctor = normalizeDoctorId(a.doctor_id);
-        if (aDoctor !== newDoctorId) return false;
-        const existingDate = parseToLocalDate(a.appointmentDate);
-        if (!existingDate || !newApptDate) return false;
-        const diffMs = Math.abs(existingDate.getTime() - newApptDate.getTime());
-        // same exact time or within 15 minutes => conflict
-        if (diffMs === 0 || diffMs <= 15 * 60 * 1000) return true;
-        return false;
-      });
-
-      if (conflictingAppt) {
-        const exDate = parseToLocalDate(conflictingAppt.appointmentDate);
-        const exDisplay = exDate
-          ? exDate.toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })
-          : conflictingAppt.appointmentDate;
-        const docName = conflictingAppt.doctorName || "Bác sĩ";
-        const patientName = conflictingAppt.patientName || "Bệnh nhân";
-        setConflictInfo(
-          `Phát hiện lịch trùng với ${docName} vào ${exDisplay} (bệnh nhân: ${patientName}). Vui lòng chọn thời gian khác.`
-        );
-        setConflictModalOpen(true);
-        setIsSaving(false);
-        return;
-      }
 
       await createAppointment(createData);
       if (onRefresh) {
@@ -461,7 +503,7 @@ export default function CalendarLayout({
       });
     } catch (error: any) {
       console.error("Error creating appointment:", error);
-      alert(error.message || "Không thể tạo lịch hẹn. Vui lòng thử lại.");
+      handleSaveError(error, "Không thể tạo lịch hẹn. Vui lòng thử lại.");
     } finally {
       setIsSaving(false);
     }
@@ -1125,7 +1167,7 @@ export default function CalendarLayout({
               ⚠️ Xác nhận xóa lịch hẹn
             </DialogTitle>
             <DialogDescription className="pt-2">
-              Bạn có chắc chắn muốn xóa lịch hẹn này? Hành động này không thể hoàn tác.
+              Bạn có chắc chắn muốn xóa lịch hẹn này? Lịch hẹn sẽ bị ẩn khỏi lịch (chỉ Admin có thể khôi phục).
             </DialogDescription>
           </DialogHeader>
 

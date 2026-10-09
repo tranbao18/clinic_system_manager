@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Layout,
   Table,
@@ -13,6 +13,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
+import dayjs from "dayjs";
 import EmployeesService from "@/lib/services/employeesService";
 
 const { Content } = Layout;
@@ -31,50 +32,50 @@ interface Employee {
   created_at: string;
 }
 
+// TỰ VIẾT
+function removeVietnameseTones(str: string): string {
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D");
+}
+//
 
 export default function EmployeesPage() {
   const [allEmployees, setAllEmployees] = useState<Employee[]>([]);
   const [role, setRole] = useState<string>("");
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [searchText, setSearchText] = useState("");
+  const [positionFilter, setPositionFilter] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   // TỰ VIẾT
-  function removeVietnameseTones(str: string): string {
-    return str
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/đ/g, "d")
-      .replace(/Đ/g, "D");
-  }
-  //
-
-  // TỰ VIẾT
   const onSearch = (value: string) => {
-    if (!value.trim()) {
-      setEmployees(allEmployees);
-    } else {
-      const searchValue = removeVietnameseTones(value.toLowerCase());
-      const filtered = allEmployees.filter((emp) =>
-        removeVietnameseTones(emp.fullname.toLowerCase()).includes(searchValue)
-      );
-      setEmployees(filtered);
-    }
+    setSearchText(value || "");
   };
   //
 
   // TỰ VIẾT
-  const onFilterByRole = (value: string | null) => {
-    if (!value) {
-      setEmployees(allEmployees);
-    } else {
-      const filtered = allEmployees.filter(
-        (emp) => emp.position.toLowerCase() === value.toLowerCase()
-      );
-      setEmployees(filtered);
-    }
+  const onFilterByRole = (value: string | null | undefined) => {
+    setPositionFilter(value || null);
   };
   //
+
+  // Tìm kiếm và lọc chức vụ áp dụng đồng thời (không reset lẫn nhau)
+  const employees = useMemo(() => {
+    const searchValue = removeVietnameseTones(searchText.trim().toLowerCase());
+    const position = (positionFilter || "").toLowerCase();
+    return allEmployees.filter((emp) => {
+      if (searchValue && !removeVietnameseTones((emp.fullname || "").toLowerCase()).includes(searchValue)) {
+        return false;
+      }
+      if (position && (emp.position || "").toLowerCase() !== position) {
+        return false;
+      }
+      return true;
+    });
+  }, [allEmployees, searchText, positionFilter]);
 
   // TỰ VIẾT
   const handleDelete = async (id: string) => {
@@ -83,7 +84,6 @@ export default function EmployeesPage() {
       message.success("Xóa nhân viên thành công");
 
       setAllEmployees((prev) => prev.filter((e) => e._id !== id));
-      setEmployees((prev) => prev.filter((e) => e._id !== id));
     } catch (err: any) {
       console.error("Delete error:", err);
       message.error(err.message || "Lỗi khi xóa nhân viên");
@@ -123,12 +123,9 @@ export default function EmployeesPage() {
       dataIndex: "dob",
       render: (value: string) => {
         if (!value) return "-";
-        const date = new Date(value);
-        return `${date.getDate().toString().padStart(2, "0")}/${(
-          date.getMonth() + 1
-        )
-          .toString()
-          .padStart(2, "0")}/${date.getFullYear()}`;
+        // Backend trả ngày sinh dạng YYYY-MM-DD → dayjs đọc theo giờ địa phương, không lệch ngày
+        const date = dayjs(value);
+        return date.isValid() ? date.format("DD/MM/YYYY") : "-";
       },
     },
 
@@ -172,9 +169,8 @@ export default function EmployeesPage() {
           created_at: e.created_at,
         }));
         setAllEmployees(mapped);
-        setEmployees(mapped);
-      } catch (err) {
-        message.error("Không thể tải danh sách nhân viên");
+      } catch (err: any) {
+        message.error(err?.message || "Không thể tải danh sách nhân viên");
       } finally {
         setLoading(false);
       }

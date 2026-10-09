@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import CalendarLayout from "@/components/layout/CalendarLayout";
 import { getPatients } from "@/lib/services/patientsService";
@@ -29,6 +29,10 @@ type Patient = {
     fullname: string;
 };
 
+// Không còn SSE (triển khai serverless) → làm mới lịch hẹn định kỳ
+const APPOINTMENTS_POLL_MS = 60000;
+const APPOINTMENT_VIEW_ROLES = ["Admin", "Receptionist", "Doctor", "Accountant"];
+
 export default function AppointmentsPage() {
     const [appointments, setAppointments] = useState<Appointment[]>([]);
     const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -36,7 +40,12 @@ export default function AppointmentsPage() {
     const [userRole, setUserRole] = useState<string>("");
     const [userEmployeeId, setUserEmployeeId] = useState<string | null>(null);
     const [canManage, setCanManage] = useState<boolean>(false);
+    const doctorsRef = useRef<Doctor[]>([]);
     const router = useRouter();
+
+    useEffect(() => {
+        doctorsRef.current = doctors;
+    }, [doctors]);
     const normalizeId = (val: any): string | null => {
         if (val === undefined || val === null) return null;
         if (typeof val === "string") return val;
@@ -80,13 +89,13 @@ export default function AppointmentsPage() {
                     setCanManage(role === "Admin" || role === "Receptionist");
 
                     // Redirect pharmacist về trang phù hợp nếu truy cập trực tiếp URL
-                    if (role === "pharmacist") {
+                    if (role === "Pharmacist") {
                         router.push("/dashboard/medicines");
                         return;
                     }
 
                     // Now fetch appointments data if user has permission
-                    if (role !== "pharmacist") {
+                    if (role !== "Pharmacist") {
                         console.log("DEBUG: Fetching appointments data for role:", role);
 
                         let doctorsList: Doctor[] = [];
@@ -119,9 +128,10 @@ export default function AppointmentsPage() {
                         }
 
                         // Fetch appointments if user has permission
-                        if (role === "Admin" || role === "Receptionist" || role === "Doctor" || role === "Accountant") {
+                        if (APPOINTMENT_VIEW_ROLES.includes(role)) {
                             console.log("DEBUG: Fetching appointments API for role:", role);
-                            const appointmentsRes = await fetch("/api/appointments", { cache: "no-store", headers: authHeaders });
+                            // Bỏ qua lịch hẹn đã xóa mềm
+                            const appointmentsRes = await fetch("/api/appointments?disabled=false", { cache: "no-store", headers: authHeaders });
                             if (appointmentsRes.ok) {
                                 const appointmentsData = await appointmentsRes.json();
                                 console.log("DEBUG: Received appointments data:", appointmentsData.length, "items");
@@ -231,7 +241,7 @@ export default function AppointmentsPage() {
         try {
             const authHeaders = getAuthHeaderClient();
             const [appointmentsRes, employeesRes, patientsRes] = await Promise.all([
-                fetch("/api/appointments", { cache: "no-store", headers: authHeaders }),
+                fetch("/api/appointments?disabled=false", { cache: "no-store", headers: authHeaders }),
                 fetch("/api/employees", { cache: "no-store", headers: authHeaders }),
                 getPatients(),
             ]);
@@ -280,7 +290,7 @@ export default function AppointmentsPage() {
                             fullname: emp.fullname,
                             position: emp.position,
                         }))
-                    : doctors.map(d => ({ ...d, _id: String(d._id) }));
+                    : doctorsRef.current.map(d => ({ ...d, _id: String(d._id) }));
 
                 let doctor = currentDoctors.find((d: Doctor) => {
                     return String(d._id) === normalizedDoctorId;
@@ -346,35 +356,21 @@ export default function AppointmentsPage() {
 
             setAppointments(mappedAppointments);
         } catch (error) {
+            // Không reload trang: lỗi mạng tạm thời khi polling sẽ được thử lại ở lượt sau
             console.error("Refresh error:", error);
-            window.location.reload();
         }
-    }, [userRole, doctors, userEmployeeId]);
+    }, [userRole, userEmployeeId]);
 
     useEffect(() => {
-        if (typeof window === "undefined") return;
-        const token = sessionStorage.getItem("token") || localStorage.getItem("token");
-        if (!token) return;
+        if (!APPOINTMENT_VIEW_ROLES.includes(userRole)) return;
 
-        const es = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
-        es.onmessage = (e) => {
-            try {
-                const notif = JSON.parse(e.data);
-                if (notif && notif.related_type === "appointment") {
-                    handleRefresh();
-                }
-            } catch (err) {
-                console.error("SSE parse error:", err);
-            }
-        };
-        es.onerror = (err) => {
-            console.warn("SSE error:", err);
-        };
+        const intervalId = setInterval(() => {
+            if (typeof document !== "undefined" && document.hidden) return;
+            handleRefresh();
+        }, APPOINTMENTS_POLL_MS);
 
-        return () => {
-            es.close();
-        };
-    }, [userRole, userEmployeeId, handleRefresh]);
+        return () => clearInterval(intervalId);
+    }, [userRole, handleRefresh]);
 
 
 

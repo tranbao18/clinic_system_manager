@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
     Input,
@@ -33,35 +33,68 @@ export default function NewMedicineImportPage() {
     // TỰ VIẾT
     useEffect(() => {
         const fetchData = async () => {
+            setLoading(true);
+
+            // Đọc người dùng hiện tại trước: lỗi tải danh sách nhân viên không được làm mất giá trị mặc định "Người nhập"
+            let user: any = null;
             try {
-                setLoading(true);
-                const medicinesData = await getMedicines();
-                setMedicines(medicinesData);
-
-                const employeesData = await EmployeesService.getAll();
-                setEmployees(employeesData);
-
-                // Get user data from sessionStorage instead of API to maintain per-tab sessions
                 const userDataStr = sessionStorage.getItem("user") || localStorage.getItem("user");
                 if (userDataStr) {
-                    const userData = JSON.parse(userDataStr);
-                    setCurrentUser(userData);
+                    user = JSON.parse(userDataStr);
+                    setCurrentUser(user);
                 }
             } catch (error) {
-                console.error("Fetch data error:", error);
-                message.error("Không thể tải dữ liệu");
-            } finally {
-                setLoading(false);
+                console.error("Parse current user error:", error);
             }
+
+            // Tải độc lập để một nguồn lỗi không chặn nguồn còn lại
+            const [medicinesResult, employeesResult] = await Promise.allSettled([
+                getMedicines(),
+                EmployeesService.getAll(),
+            ]);
+
+            if (medicinesResult.status === "fulfilled") {
+                setMedicines(medicinesResult.value);
+            } else {
+                console.error("Fetch medicines error:", medicinesResult.reason);
+                message.error(medicinesResult.reason?.message || "Không thể tải danh sách thuốc");
+            }
+
+            if (employeesResult.status === "fulfilled") {
+                setEmployees(Array.isArray(employeesResult.value) ? employeesResult.value : []);
+            } else {
+                console.error("Fetch employees error:", employeesResult.reason);
+                message.warning(
+                    user?.employee_id
+                        ? "Không thể tải danh sách nhân viên, người nhập mặc định là tài khoản hiện tại"
+                        : "Không thể tải danh sách nhân viên"
+                );
+            }
+
+            setLoading(false);
         };
         fetchData();
     }, []);
 
-    useEffect(() => {
-        if (currentUser?.employee_id) {
-            form.setFieldValue("imported_by", currentUser.employee_id);
+    const currentEmployeeId: string | undefined =
+        currentUser?.employee_id && typeof currentUser.employee_id === "object"
+            ? currentUser.employee_id._id
+            : currentUser?.employee_id || undefined;
+
+    // Luôn có lựa chọn cho người dùng hiện tại, kể cả khi không tải được danh sách nhân viên
+    const employeeOptions = useMemo(() => {
+        const options = employees.map((e) => ({
+            value: e._id,
+            label: `${e.fullname} - ${e.position}`,
+        }));
+        if (currentEmployeeId && !options.some((o) => o.value === currentEmployeeId)) {
+            options.unshift({
+                value: currentEmployeeId,
+                label: `${currentUser?.username || "Tôi"} (tài khoản hiện tại)`,
+            });
         }
-    }, [currentUser, form]);
+        return options;
+    }, [employees, currentEmployeeId, currentUser?.username]);
 
     const handleCreate = async (values: any) => {
         try {
@@ -73,8 +106,9 @@ export default function NewMedicineImportPage() {
                 batchcode: values.batchcode.trim(),
                 quantity: values.quantity,
                 unit_price: values.unit_price,
-                expiry_date: values.expiry_date.toISOString(),
-                import_date: values.import_date.toISOString(),
+                // Ngày thuần (không giờ) để không bị lệch sang ngày hôm trước do múi giờ
+                expiry_date: dayjs(values.expiry_date).format("YYYY-MM-DD"),
+                import_date: dayjs(values.import_date).format("YYYY-MM-DD"),
                 imported_by: values.imported_by,
             };
 
@@ -112,6 +146,7 @@ export default function NewMedicineImportPage() {
                     onFinish={handleCreate}
                     initialValues={{
                         import_date: dayjs(),
+                        imported_by: currentEmployeeId,
                     }}
                 >
                     <Form.Item
@@ -233,10 +268,7 @@ export default function NewMedicineImportPage() {
                             filterOption={(input, option) =>
                                 (option?.label ?? "").toLowerCase().includes(input.toLowerCase())
                             }
-                            options={employees.map((e) => ({
-                                value: e._id,
-                                label: `${e.fullname} - ${e.position}`,
-                            }))}
+                            options={employeeOptions}
                         />
                     </Form.Item>
 

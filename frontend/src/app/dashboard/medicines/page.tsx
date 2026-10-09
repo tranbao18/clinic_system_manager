@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Table,
     Button,
@@ -27,10 +27,18 @@ const { Search } = Input;
 const { Option } = Select;
 const { Text } = Typography;
 
+const normalizeText = (str: string) =>
+    str
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9\s]/g, "")
+        .toLowerCase()
+        .trim();
+
 
 export default function MedicinesPage() {
+    // Danh sách gốc; danh sách hiển thị luôn suy ra từ danh sách gốc + ô tìm kiếm + danh mục
     const [medicines, setMedicines] = useState<Medicine[]>([]);
-    const [filteredMedicines, setFilteredMedicines] = useState<Medicine[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchText, setSearchText] = useState("");
     const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
@@ -54,10 +62,9 @@ export default function MedicinesPage() {
             setLoading(true);
             const data = await getMedicines();
             setMedicines(data);
-            setFilteredMedicines(data);
         } catch (error) {
             console.error("Fetch medicines error:", error);
-            message.error("Không thể tải danh sách thuốc");
+            message.error(error instanceof Error ? error.message : "Không thể tải danh sách thuốc");
         } finally {
             setLoading(false);
         }
@@ -84,19 +91,9 @@ export default function MedicinesPage() {
     //
 
     // TỰ VIẾT
-    const normalizeText = (str: string) =>
-        str
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-zA-Z0-9\s]/g, "")
-            .toLowerCase()
-            .trim();
-    //
-
-    // TỰ VIẾT
-    const handleFilter = (text: string, category: string | null) => {
-        let filtered = [...medicines];
-        const search = normalizeText(text);
+    const filteredMedicines = useMemo(() => {
+        let filtered = medicines;
+        const search = normalizeText(searchText);
 
         if (search) {
             filtered = filtered.filter((item) => {
@@ -109,28 +106,26 @@ export default function MedicinesPage() {
             });
         }
 
-        if (category) {
+        if (categoryFilter) {
             filtered = filtered.filter((item) => {
                 const categories = Array.isArray(item.category) ? item.category : (item.category ? [item.category] : []);
-                return categories.includes(category);
+                return categories.includes(categoryFilter);
             });
         }
 
-        setFilteredMedicines(filtered);
-    };
+        return filtered;
+    }, [medicines, searchText, categoryFilter]);
     //
 
     // TỰ VIẾT
     const onSearch = (value: string) => {
         setSearchText(value);
-        handleFilter(value, categoryFilter);
     };
     //
 
     // TỰ VIẾT
     const onCategoryChange = (value: string | null) => {
-        setCategoryFilter(value);
-        handleFilter(searchText, value);
+        setCategoryFilter(value ?? null);
     };
     //
 
@@ -140,8 +135,8 @@ export default function MedicinesPage() {
             await deleteMedicine(_id);
             message.success("Đã xóa thuốc");
             fetchMedicines();
-        } catch {
-            message.error("Xóa thất bại");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "Xóa thất bại");
         }
     };
     //

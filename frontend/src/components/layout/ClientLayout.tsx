@@ -12,15 +12,9 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
     const [allowed, setAllowed] = useState<boolean>(true);
     const isAuthPage = pathname.startsWith("/auth");
 
-    if (isAuthPage) {
-        return (
-            <body className="min-h-screen flex items-center justify-center bg-gray-100">
-                {children}
-            </body>
-        );
-    }
-
+    // Hook phải được gọi trước mọi return sớm (Rules of Hooks)
     useEffect(() => {
+        if (isAuthPage) return;
         const checkAccess = async () => {
             try {
                 const res = await fetch("/api/session", { cache: "no-store" });
@@ -57,7 +51,15 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
             }
         };
         checkAccess();
-    }, [pathname]);
+    }, [pathname, isAuthPage, router]);
+
+    if (isAuthPage) {
+        return (
+            <body className="min-h-screen flex items-center justify-center bg-gray-100">
+                {children}
+            </body>
+        );
+    }
 
     return (
         <body className="flex">

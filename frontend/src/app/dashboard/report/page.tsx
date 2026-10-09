@@ -14,7 +14,7 @@ import {
 } from "@mui/x-charts";
 import { Box } from "@mui/material";
 import { Spin, Select, Button, InputNumber, Modal } from "antd";
-import { getAuthHeaderClient } from "@/lib/authHeaderClient";
+import { getAuthHeaderClient, handleAuthRedirect } from "@/lib/authHeaderClient";
 
 interface InventoryItem {
     medicine_id: string;
@@ -36,6 +36,25 @@ interface ProfitLossMonthlyResponse {
             profit: number;
         }
     >;
+}
+
+// Đọc body một lần, kiểm tra res.ok trước khi dùng dữ liệu (trang lỗi HTML không còn gây lỗi parse JSON)
+async function readJsonOrThrow<T>(res: Response, fallback: string): Promise<T> {
+    const text = await res.text();
+    let data: any = null;
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = null;
+    }
+    if (!res.ok) {
+        if (res.status === 401) handleAuthRedirect();
+        throw new Error(data?.error || data?.message || fallback);
+    }
+    if (data === null) {
+        throw new Error(fallback);
+    }
+    return data as T;
 }
 
 export default function ReportsPage() {
@@ -66,23 +85,10 @@ export default function ReportsPage() {
                     fetch(`/api/reports/profit-loss/monthly?startDate=${startDate}&endDate=${endDate}`, { headers: authHeaders }),
                 ]);
 
-                const invData = await invRes.json();
-                const qtyData = await qtyRes.json();
-                const valData = await valRes.json();
-                const plData = await plRes.json();
-
-                if (!invRes.ok) {
-                    throw new Error(invData.error || "Không thể lấy tồn kho thuốc");
-                }
-                if (!qtyRes.ok) {
-                    throw new Error(qtyData.error || "Không thể lấy tổng số lượng tồn kho");
-                }
-                if (!valRes.ok) {
-                    throw new Error(valData.error || "Không thể lấy tổng giá trị tồn kho");
-                }
-                if (!plRes.ok) {
-                    throw new Error(plData.error || "Không thể lấy báo cáo lãi/lỗ theo tháng");
-                }
+                const invData = await readJsonOrThrow<{ data?: InventoryItem[] }>(invRes, "Không thể lấy tồn kho thuốc");
+                const qtyData = await readJsonOrThrow<{ total_quantity?: number }>(qtyRes, "Không thể lấy tổng số lượng tồn kho");
+                const valData = await readJsonOrThrow<{ total_value?: number }>(valRes, "Không thể lấy tổng giá trị tồn kho");
+                const plData = await readJsonOrThrow<ProfitLossMonthlyResponse>(plRes, "Không thể lấy báo cáo lãi/lỗ theo tháng");
 
                 setInventory(invData.data || []);
                 setTotalQuantity(qtyData.total_quantity || 0);
@@ -100,10 +106,12 @@ export default function ReportsPage() {
     }, []);
 
 
-    const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "https://meppod.onrender.com";
+    // Không fallback sang URL production: thiếu cấu hình thì báo lỗi rõ ràng
+    const API_BASE = (process.env.NEXT_PUBLIC_BACKEND_URL || "").replace(/\/+$/, "");
 
     const downloadBlob = async (url: string, filenameFallback: string) => {
-        const fullUrl = API_BASE ? `${API_BASE}${url}` : url;
+        if (!API_BASE) throw new Error("Chưa cấu hình NEXT_PUBLIC_BACKEND_URL");
+        const fullUrl = `${API_BASE}${url}`;
         const authHeader = getAuthHeaderClient();
         const headers: Record<string, string> = { Accept: "*/*" };
         if ((authHeader as any).Authorization) {

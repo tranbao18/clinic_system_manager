@@ -22,38 +22,32 @@ export async function GET(req: Request) {
       headers.Authorization = authHeaders.Authorization;
     }
 
-    const url = `${API_URL}/api/notifications${read ? `?read=${read}` : ""}`;
+    const url = `${API_URL}/api/notifications${read ? `?read=${encodeURIComponent(read)}` : ""}`;
     const res = await fetch(url, {
       method: "GET",
       headers,
       cache: "no-store",
     });
 
+    // Đọc body đúng một lần (json() rồi text() sẽ lỗi "Body is unusable")
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+
     if (!res.ok) {
-      let errorDetail = "";
-      try {
-        const errorData = await res.json();
-        errorDetail = errorData.error || errorData.message || JSON.stringify(errorData);
-      } catch {
-        const text = await res.text();
-        errorDetail = text || `HTTP ${res.status} ${res.statusText}`;
-      }
-
-      console.error("External API (GET notifications) error:", {
-        status: res.status,
-        statusText: res.statusText,
-        detail: errorDetail,
-        url,
-      });
-
+      console.error("External API (GET notifications) error:", { status: res.status, body: text, url });
+      const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
       return NextResponse.json(
-        { error: "Không thể lấy thông báo", detail: errorDetail },
+        { ...body, error: body.error || body.message || "Không thể lấy thông báo" },
         { status: res.status }
       );
     }
 
-    const data = await res.json();
-    return NextResponse.json(data);
+    return NextResponse.json(data ?? []);
   } catch (err: any) {
     console.error("GET /api/notifications exception:", err);
     return NextResponse.json(

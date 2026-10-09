@@ -5,7 +5,7 @@ import { Layout, Menu } from "antd";
 import { useState, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getMenuByRole } from "@/lib/menu";
-import { clearAllTokens } from "@/lib/authHeaderClient";
+import { logoutSession } from "./Header";
 
 const { Sider } = Layout;
 
@@ -59,6 +59,16 @@ export default function Navbar() {
             }
         }
     }, [pathname, menuItems]);
+
+    const [loggingOut, setLoggingOut] = useState(false);
+
+    // Cùng luồng với Header: thu hồi token + hủy cookie phiên, không chỉ xóa storage
+    const handleLogout = async () => {
+        if (loggingOut) return;
+        setLoggingOut(true);
+        await logoutSession();
+        router.push("/auth/login");
+    };
 
     const handleMenuClick = (e: any) => {
         const clickedItem = menuItems.find((item) => item.key === e.key);
@@ -131,18 +141,8 @@ export default function Navbar() {
                     <div className="flex items-center justify-between">
                         <div className="text-sm text-white/80">Phiên làm việc</div>
                         <button
-                        onClick={() => {
-                                try {
-                                    // Clear client-side tokens and user data for this tab
-                                    localStorage.removeItem("token");
-                                    localStorage.removeItem("user");
-                                    sessionStorage.removeItem("token");
-                                    sessionStorage.removeItem("user");
-                                    // Also clear any global token store if provided
-                                    try { clearAllTokens(); } catch (e) {}
-                                } catch (e) { }
-                                router.push("/auth/login");
-                            }}
+                            onClick={handleLogout}
+                            disabled={loggingOut}
                             className="text-xs bg-white/10 px-3 py-1 rounded hover:bg-white/20"
                         >
                             Đăng xuất
@@ -151,16 +151,8 @@ export default function Navbar() {
                 ) : (
                     <div className="flex items-center justify-center">
                         <button
-                        onClick={() => {
-                                try {
-                                    localStorage.removeItem("token");
-                                    localStorage.removeItem("user");
-                                    sessionStorage.removeItem("token");
-                                    sessionStorage.removeItem("user");
-                                    try { clearAllTokens(); } catch (e) {}
-                                } catch (e) { }
-                                router.push("/auth/login");
-                            }}
+                            onClick={handleLogout}
+                            disabled={loggingOut}
                             className="p-2 rounded hover:bg-white/5"
                             title="Đăng xuất"
                         >

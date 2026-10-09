@@ -9,15 +9,26 @@ interface PrintPrescriptionProps {
     formatDateTime: (date: string) => string;
 }
 
+// Mọi dữ liệu người dùng nhập đều phải escape trước khi ghi vào HTML (tránh XSS qua chẩn đoán, liều dùng...)
+export const escapeHtml = (value: unknown): string =>
+    String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+
 export const printPrescription = (record: MedicalRecord, patient: Patient | null, formatDateTime: (date: string) => string) => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
         throw new Error("Không thể mở cửa sổ in. Vui lòng kiểm tra cài đặt trình duyệt.");
     }
+    // Cắt liên kết ngược tới trang gốc
+    printWindow.opener = null;
 
-    const doctorName = typeof record.doctor_id === 'object' ? record.doctor_id.fullname : '—';
+    const doctor = record.doctor_id && typeof record.doctor_id === 'object' ? record.doctor_id : null;
+    const doctorName = doctor?.fullname || '—';
     const patientName = patient?.fullname || '—';
-    const patientPhone = patient?.phone || '—';
     const recordDate = formatDateTime(record.created_at);
 
     const formatDate = (dateString: string) => {
@@ -44,8 +55,8 @@ export const printPrescription = (record: MedicalRecord, patient: Patient | null
 
     const patientGender = mapGender(patient?.gender);
 
-    const prescriptionData = record.prescriptions.map((p: any, idx: number) => {
-        const medicine = typeof p.medicine_id === 'object' ? p.medicine_id : null;
+    const prescriptionData = (record.prescriptions || []).map((p: any, idx: number) => {
+        const medicine = p.medicine_id && typeof p.medicine_id === 'object' ? p.medicine_id : null;
         const price = medicine?.price || 0;
         const quantity = p.quantity || 0;
         const totalPrice = price * quantity;
@@ -68,7 +79,7 @@ export const printPrescription = (record: MedicalRecord, patient: Patient | null
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Toa thuốc - ${patientName}</title>
+    <title>Toa thuốc - ${escapeHtml(patientName)}</title>
     <style>
         @media print {
             @page {
@@ -192,33 +203,33 @@ export const printPrescription = (record: MedicalRecord, patient: Patient | null
     <div class="info-section">
         <div class="info-row">
             <span class="info-label">Bệnh nhân:</span>
-            <span class="info-value">${patientName}</span>
+            <span class="info-value">${escapeHtml(patientName)}</span>
         </div>
         <div class="info-row">
             <span class="info-label">Sinh ngày:</span>
-            <span class="info-value">${patientDob}</span>
+            <span class="info-value">${escapeHtml(patientDob)}</span>
         </div>
         <div class="info-row">
             <span class="info-label">Giới tính:</span>
-            <span class="info-value">${patientGender}</span>
+            <span class="info-value">${escapeHtml(patientGender)}</span>
         </div>
         <div class="info-row">
             <span class="info-label">Ngày khám:</span>
-            <span class="info-value">${recordDate}</span>
+            <span class="info-value">${escapeHtml(recordDate)}</span>
         </div>
         <div class="info-row">
             <span class="info-label">Bác sĩ:</span>
-            <span class="info-value">${doctorName}</span>
+            <span class="info-value">${escapeHtml(doctorName)}</span>
         </div>
     </div>
     
     <div class="diagnosis">
-        <strong>Chẩn đoán:</strong> ${record.diagnosis || '—'}
+        <strong>Chẩn đoán:</strong> ${escapeHtml(record.diagnosis || '—')}
     </div>
     
     ${record.treatment ? `
     <div class="diagnosis">
-        <strong>Điều trị:</strong> ${record.treatment}
+        <strong>Điều trị:</strong> ${escapeHtml(record.treatment)}
     </div>
     ` : ''}
     
@@ -237,25 +248,25 @@ export const printPrescription = (record: MedicalRecord, patient: Patient | null
         <tbody>
             ${prescriptionData.map((item: any) => `
             <tr>
-                <td class="text-center">${item.stt}</td>
-                <td>${item.medicine}</td>
-                <td class="text-center">${item.quantity}</td>
-                <td class="text-center">${item.unit}</td>
-                <td class="text-right">${item.price > 0 ? item.price.toLocaleString('vi-VN') + ' đ' : '—'}</td>
-                <td class="text-right">${item.totalPrice > 0 ? item.totalPrice.toLocaleString('vi-VN') + ' đ' : '—'}</td>
-                <td>${item.dosage}</td>
+                <td class="text-center">${escapeHtml(item.stt)}</td>
+                <td>${escapeHtml(item.medicine)}</td>
+                <td class="text-center">${escapeHtml(item.quantity)}</td>
+                <td class="text-center">${escapeHtml(item.unit)}</td>
+                <td class="text-right">${escapeHtml(item.price > 0 ? item.price.toLocaleString('vi-VN') + ' đ' : '—')}</td>
+                <td class="text-right">${escapeHtml(item.totalPrice > 0 ? item.totalPrice.toLocaleString('vi-VN') + ' đ' : '—')}</td>
+                <td>${escapeHtml(item.dosage)}</td>
             </tr>
             `).join('')}
         </tbody>
     </table>
     
     <div class="total-section">
-        <div>Tổng tiền: <strong>${totalAmount.toLocaleString('vi-VN')} đ</strong></div>
+        <div>Tổng tiền: <strong>${escapeHtml(totalAmount.toLocaleString('vi-VN'))} đ</strong></div>
     </div>
     
     ${record.notes ? `
     <div class="diagnosis">
-        <strong>Ghi chú:</strong> ${record.notes}
+        <strong>Ghi chú:</strong> ${escapeHtml(record.notes)}
     </div>
     ` : ''}
     
@@ -264,7 +275,7 @@ export const printPrescription = (record: MedicalRecord, patient: Patient | null
         <div class="signature">
             <div class="signature-line">
                 <strong>Bác sĩ ký</strong><br/>
-                ${doctorName}
+                ${escapeHtml(doctorName)}
             </div>
         </div>
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Table,
     Button,
@@ -21,9 +21,17 @@ import dayjs from "dayjs";
 const { Search } = Input;
 const { Text } = Typography;
 
+const normalizeText = (str: string) =>
+    str
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9\s]/g, "")
+        .toLowerCase()
+        .trim();
+
 export default function DisabledInvoicesPage() {
+    // Danh sách gốc = hóa đơn đã xóa (GET /api/invoices?disabled=true); danh sách hiển thị suy ra từ ô tìm kiếm
     const [invoices, setInvoices] = useState<Invoice[]>([]);
-    const [filteredInvoices, setFilteredInvoices] = useState<Invoice[]>([]);
     const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
     const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
     const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -36,10 +44,11 @@ export default function DisabledInvoicesPage() {
             setLoading(true);
             const data = await getDisabledInvoices();
             setInvoices(data);
-            setFilteredInvoices(data);
+            // Bỏ các lựa chọn không còn trong Thùng rác
+            setSelectedRowKeys((prev) => prev.filter((key) => data.some((inv) => inv._id === key)));
         } catch (error) {
             console.error("Fetch disabled invoices error:", error);
-            message.error("Không thể tải danh sách hóa đơn đã xóa");
+            message.error(error instanceof Error ? error.message : "Không thể tải danh sách hóa đơn đã xóa");
         } finally {
             setLoading(false);
         }
@@ -49,30 +58,20 @@ export default function DisabledInvoicesPage() {
         fetchInvoices();
     }, []);
 
-    const normalizeText = (str: string) =>
-        str
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-zA-Z0-9\s]/g, "")
-            .toLowerCase()
-            .trim();
+    const filteredInvoices = useMemo(() => {
+        const search = normalizeText(searchText);
+        if (!search) return invoices;
+        return invoices.filter((item) => {
+            const patientName = typeof item.patient_id === 'object' && item.patient_id ? (item.patient_id.fullname || '') : '';
+            return (
+                normalizeText(patientName).includes(search) ||
+                normalizeText(item._id).includes(search)
+            );
+        });
+    }, [invoices, searchText]);
 
     const onSearch = (value: string) => {
         setSearchText(value);
-        const search = normalizeText(value);
-
-        if (!search) {
-            setFilteredInvoices(invoices);
-        } else {
-            const filtered = invoices.filter((item) => {
-                const patientName = typeof item.patient_id === 'object' ? (item.patient_id.fullname || '') : '';
-                return (
-                    normalizeText(patientName).includes(search) ||
-                    normalizeText(item._id).includes(search)
-                );
-            });
-            setFilteredInvoices(filtered);
-        }
     };
 
     // TỰ VIẾT

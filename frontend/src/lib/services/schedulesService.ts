@@ -16,6 +16,21 @@ async function getSafeHeaders() {
     return getSafeAuthHeaders();
 }
 
+// Đọc body lỗi một lần; body không phải JSON vẫn ra thông báo dễ hiểu
+async function buildError(res: Response, fallback: string): Promise<Error> {
+    let message = fallback;
+    try {
+        const text = await res.text();
+        const body = text ? JSON.parse(text) : null;
+        if (body && typeof body === "object") message = body.error || body.message || fallback;
+    } catch {
+        // giữ thông báo mặc định
+    }
+    const err = new Error(message);
+    (err as any).status = res.status;
+    return err;
+}
+
 const SchedulesService = {
     async getAll(): Promise<ShiftSchedule[]> {
         try {
@@ -71,8 +86,7 @@ const SchedulesService = {
             });
 
             if (!res.ok) {
-                const error = await res.json();
-                throw new Error(error.error || `Failed to create schedule: ${res.status}`);
+                throw await buildError(res, "Không thể tạo lịch trực");
             }
 
             return await res.json();
@@ -96,8 +110,7 @@ const SchedulesService = {
             });
 
             if (!res.ok) {
-                const error = await res.json();
-                throw new Error(error.error || `Failed to update schedule: ${res.status}`);
+                throw await buildError(res, "Không thể cập nhật lịch trực");
             }
 
             return await res.json();
@@ -117,8 +130,7 @@ const SchedulesService = {
             });
 
             if (!res.ok) {
-                const error = await res.json();
-                throw new Error(error.error || `Failed to delete schedule: ${res.status}`);
+                throw await buildError(res, "Không thể xóa lịch trực");
             }
         } catch (error: any) {
             console.error("❌ deleteSchedule errors:", error?.message || error);

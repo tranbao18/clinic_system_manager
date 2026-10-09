@@ -1,21 +1,32 @@
 import dao from '../dao/employee.dao.js';
 import EmployeeService from '../services/employee.service.js';
 import pickFields from '../utils/pick-fields.js';
+import { normalizeEmail } from '../models/employee.model.js';
 
+import errorStatus from '../utils/error-status.js';
 // shift_schedule do module lịch làm việc quản lý riêng
 const FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'position', 'specialization', 'basic_salary'];
+
+// Email bỏ trống -> không lưu "" (tạo mới) / xóa field (cập nhật): index unique chỉ bỏ qua nhân viên KHÔNG có email
+function withNormalizedEmail(data, { unsetIfBlank = false } = {}) {
+  if (data.email === undefined) return data;
+  const email = normalizeEmail(data.email);
+  if (email !== undefined) return { ...data, email };
+  const { email: _blank, ...rest } = data;
+  return unsetIfBlank ? { ...rest, $unset: { email: 1 } } : rest;
+}
 
 class EmployeeController {
   async create(req, res) {
     try {
-      const result = await dao.create(pickFields(req.body, FIELDS));
+      const result = await dao.create(withNormalizedEmail(pickFields(req.body, FIELDS)));
       res.status(201).json(result);
     } catch (err) {
       // Xử lý lỗi duplicate key (email đã tồn tại)
       if (err.code === 11000 && err.keyPattern && err.keyPattern.email) {
         return res.status(400).json({ error: "Email này đã được sử dụng bởi nhân viên khác" });
       }
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -33,7 +44,7 @@ class EmployeeController {
       const result = await query;
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -43,13 +54,13 @@ class EmployeeController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, pickFields(req.body, FIELDS));
+      const result = await dao.update(req.params.id, withNormalizedEmail(pickFields(req.body, FIELDS), { unsetIfBlank: true }));
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
@@ -57,7 +68,7 @@ class EmployeeController {
       if (err.code === 11000 && err.keyPattern && err.keyPattern.email) {
         return res.status(400).json({ error: "Email này đã được sử dụng bởi nhân viên khác" });
       }
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -71,7 +82,7 @@ class EmployeeController {
       await EmployeeService.deleteCascade(req.params.id);
       res.json({ message: 'Deleted with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -80,7 +91,7 @@ class EmployeeController {
       await EmployeeService.restoreCascade(req.params.id);
       res.json({ message: 'Employee restore with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

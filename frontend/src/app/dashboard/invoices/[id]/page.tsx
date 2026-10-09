@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
     Button,
@@ -22,8 +22,9 @@ import {
     Divider,
     Empty,
     QRCode,
+    Popconfirm,
 } from "antd";
-import { PlusOutlined, DeleteOutlined, DollarOutlined, QrcodeOutlined } from "@ant-design/icons";
+import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import {
     getInvoiceById,
@@ -41,7 +42,6 @@ import {
 
 const { Title, Text } = Typography;
 const { Option } = Select;
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5050";
 
 // TỰ VIẾT
 const getStatusColor = (status: string) => {
@@ -77,17 +77,22 @@ export default function InvoiceDetailPage() {
     const [paymentForm] = Form.useForm();
     const [invoice, setInvoice] = useState<Invoice | null>(null);
     const [payments, setPayments] = useState<Payment[]>([]);
+    // `loading` chỉ dùng cho lần tải đầu; làm mới nền dùng `refreshing` để không thay cả trang bằng spinner
     const [loading, setLoading] = useState(true);
-    const [loadingPayments, setLoadingPayments] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
     const [isPaymentModalVisible, setIsPaymentModalVisible] = useState(false);
     const [creatingPayment, setCreatingPayment] = useState(false);
     const [processingVNPay, setProcessingVNPay] = useState(false);
     const [processingQR, setProcessingQR] = useState(false);
     const [qrCodeData, setQrCodeData] = useState<string>("");
     const [isQRModalVisible, setIsQRModalVisible] = useState(false);
+    const [updatingStatus, setUpdatingStatus] = useState(false);
+    const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(null);
     const [role, setRole] = useState<string>("");
-    const pollRef = useRef<number | null>(null);
-    const prevPaymentsCountRef = useRef<number>(0);
+    // Số thanh toán lúc mở QR, để polling biết khi nào có thanh toán mới
+    const qrBaselineCountRef = useRef<number>(0);
+    const paymentNoticeHandledRef = useRef(false);
+    const pendingPaymentRefreshRef = useRef(false);
 
     // TỰ VIẾT
     useEffect(() => {
@@ -108,114 +113,131 @@ export default function InvoiceDetailPage() {
         fetchRole();
     }, []);
 
-    const fetchInvoice = async () => {
-        if (!id) return;
+    // silent: dùng cho polling/làm mới nền — chỉ log lỗi, không bắn thông báo mỗi lần
+    const fetchInvoice = useCallback(async (silent = false): Promise<Invoice | null> => {
+        if (!id) return null;
         try {
-            setLoading(true);
             const data = await getInvoiceById(id);
             setInvoice(data);
+            return data;
         } catch (error: any) {
             console.error(error);
-            message.error(error.message || "Không thể tải thông tin hóa đơn");
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const fetchPayments = async () => {
-        if (!id) return;
-        try {
-            setLoadingPayments(true);
-            const data = await getPaymentsByInvoiceId(id);
-            setPayments(data);
-        } catch (error: any) {
-            console.error(error);
-            message.error(error.message || "Không thể tải danh sách thanh toán");
-        } finally {
-            setLoadingPayments(false);
-        }
-    };
-    // 
-
-    useEffect(() => {
-        fetchInvoice();
-        fetchPayments();
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const paymentResult = urlParams.get('payment');
-
-        const hasVNPayParams = urlParams.has('vnp_ResponseCode') || urlParams.has('vnp_TxnRef');
-
-        if (hasVNPayParams && !paymentResult) {
-            const vnpParams = new URLSearchParams();
-            urlParams.forEach((value, key) => {
-                if (key.startsWith('vnp_')) {
-                    vnpParams.append(key, value);
-                }
-            });
-
-            const invoiceId = urlParams.get('vnp_TxnRef') || id;
-            if (invoiceId) {
-                // redirect to backend return handler (note: backend route is /api/payments/vnpay-return)
-                window.location.href = `/api/payments/vnpay-return?${vnpParams.toString()}`;
-                return;
-            }
-        }
-
-        if (paymentResult === 'success') {
-            message.success('Thanh toán VNPay thành công!');
-            fetchInvoice();
-            fetchPayments();
-            window.history.replaceState({}, '', window.location.pathname);
-        } else if (paymentResult === 'failed') {
-            const errorMsg = urlParams.get('message') || 'Thanh toán thất bại';
-            message.error(errorMsg);
-            window.history.replaceState({}, '', window.location.pathname);
+            if (!silent) message.error(error.message || "Không thể tải thông tin hóa đơn");
+            return null;
         }
     }, [id]);
 
-    // Poll when QR modal is open to detect payment created by mobile redirect/mock
+    const fetchPayments = useCallback(async (silent = false): Promise<Payment[] | null> => {
+        if (!id) return null;
+        try {
+            const data = await getPaymentsByInvoiceId(id);
+            setPayments(data);
+            return data;
+        } catch (error: any) {
+            console.error(error);
+            if (!silent) message.error(error.message || "Không thể tải danh sách thanh toán");
+            return null;
+        }
+    }, [id]);
+
+    const refreshAll = useCallback(async (silent = false) => {
+        setRefreshing(true);
+        try {
+            await Promise.all([fetchInvoice(silent), fetchPayments(silent)]);
+        } finally {
+            setRefreshing(false);
+        }
+    }, [fetchInvoice, fetchPayments]);
+    //
+
+    // Lần tải đầu (và khi đổi id)
     useEffect(() => {
-        if (!isQRModalVisible) {
-            if (pollRef.current) {
-                window.clearInterval(pollRef.current);
-                pollRef.current = null;
+        if (!id) return;
+        let cancelled = false;
+        setLoading(true);
+        Promise.all([fetchInvoice(), fetchPayments()]).finally(() => {
+            if (!cancelled) setLoading(false);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [id, fetchInvoice, fetchPayments]);
+
+    // Kết quả VNPay: backend /api/payments/vnpay-return chỉ kiểm tra chữ ký rồi chuyển về đây với ?payment=success|failed.
+    // Thanh toán chỉ được ghi nhận qua IPN (có thể đến muộn hơn) nên ngoài lần tải đầu, tải lại thêm một lần sau vài giây.
+    useEffect(() => {
+        if (!id) return;
+        if (!paymentNoticeHandledRef.current) {
+            const params = new URLSearchParams(window.location.search);
+            const paymentResult = params.get("payment");
+            const hasRawVNPayParams = Array.from(params.keys()).some((key) => key.startsWith("vnp_"));
+            if (!paymentResult && !hasRawVNPayParams) return;
+            paymentNoticeHandledRef.current = true;
+            pendingPaymentRefreshRef.current = true;
+
+            if (paymentResult === "success") {
+                message.success("VNPay báo thanh toán thành công. Hóa đơn sẽ được cập nhật khi giao dịch được xác nhận.");
+            } else if (paymentResult) {
+                message.error("Thanh toán VNPay không thành công hoặc đã bị hủy.");
+            } else {
+                // Tham số vnp_* chưa qua backend xác thực chữ ký: không coi là thành công
+                message.info("Đã nhận phản hồi từ VNPay, đang chờ hệ thống xác nhận giao dịch.");
             }
-            return;
+
+            // Xóa tham số khỏi URL để tải lại trang không hiện lại thông báo
+            ["payment", "message"].forEach((key) => params.delete(key));
+            Array.from(params.keys())
+                .filter((key) => key.startsWith("vnp_"))
+                .forEach((key) => params.delete(key));
+            const qs = params.toString();
+            window.history.replaceState(window.history.state, "", window.location.pathname + (qs ? `?${qs}` : ""));
         }
 
-        // start polling every 3s
-        const idInterval = window.setInterval(async () => {
+        if (!pendingPaymentRefreshRef.current) return;
+        const timer = window.setTimeout(() => {
+            pendingPaymentRefreshRef.current = false;
+            refreshAll(true);
+        }, 5000);
+        return () => window.clearTimeout(timer);
+    }, [id, refreshAll]);
+
+    // Khi mở QR: kiểm tra mỗi 3 giây, so sánh với dữ liệu vừa tải (không đọc state cũ trong closure)
+    useEffect(() => {
+        if (!isQRModalVisible) return;
+
+        let stopped = false;
+        let inFlight = false;
+        const baseline = qrBaselineCountRef.current;
+
+        const timer = window.setInterval(async () => {
+            if (stopped || inFlight) return;
+            inFlight = true;
             try {
-                await fetchPayments();
-                await fetchInvoice();
-                // if number of payments increased or invoice status changed, close modal and notify
-                const currentCount = payments.length;
-                if (currentCount > prevPaymentsCountRef.current || (invoice && invoice.status === 'Paid')) {
-                    message.success('Thanh toán đã được xử lý, đang cập nhật giao diện...');
+                const [latestInvoice, latestPayments] = await Promise.all([
+                    fetchInvoice(true),
+                    fetchPayments(true),
+                ]);
+                if (stopped) return;
+                const paidNow =
+                    (latestPayments !== null && latestPayments.length > baseline) ||
+                    latestInvoice?.status === "Paid";
+                if (paidNow) {
+                    stopped = true;
+                    window.clearInterval(timer);
                     setIsQRModalVisible(false);
-                    if (pollRef.current) {
-                        window.clearInterval(pollRef.current);
-                        pollRef.current = null;
-                    }
-                    // refresh data once more
-                    await fetchPayments();
-                    await fetchInvoice();
+                    setQrCodeData("");
+                    message.success("Thanh toán đã được ghi nhận");
                 }
-            } catch (err) {
-                console.error('Polling error:', err);
+            } finally {
+                inFlight = false;
             }
         }, 3000);
 
-        pollRef.current = idInterval as unknown as number;
-
         return () => {
-            if (pollRef.current) {
-                window.clearInterval(pollRef.current);
-                pollRef.current = null;
-            }
+            stopped = true;
+            window.clearInterval(timer);
         };
-    }, [isQRModalVisible, payments.length, invoice?.status]);
+    }, [isQRModalVisible, fetchInvoice, fetchPayments]);
 
     const handleCreatePayment = async (values: any) => {
         if (!id) return;
@@ -245,9 +267,9 @@ export default function InvoiceDetailPage() {
             message.success("Tạo thanh toán thành công");
             setIsPaymentModalVisible(false);
             paymentForm.resetFields();
-            await fetchPayments();
-            await fetchInvoice();
+            await refreshAll();
         } catch (error: any) {
+            // Backend trả thông báo cụ thể (vd: vượt quá số tiền còn lại)
             message.error(error.message || "Không thể tạo thanh toán");
         } finally {
             setCreatingPayment(false);
@@ -257,26 +279,43 @@ export default function InvoiceDetailPage() {
     // TỰ VIẾT
     const handleDeletePayment = async (paymentId: string) => {
         try {
+            setDeletingPaymentId(paymentId);
             await deletePayment(paymentId);
             message.success("Xóa thanh toán thành công");
-            await fetchPayments();
-            await fetchInvoice();
+            await refreshAll();
         } catch (error: any) {
             message.error(error.message || "Không thể xóa thanh toán");
+        } finally {
+            setDeletingPaymentId(null);
         }
     };
 
+    // Backend tự tính lại trạng thái từ các khoản thanh toán; lấy kết quả trả về để cập nhật giao diện
     const handleUpdateStatus = async () => {
         if (!id) return;
         try {
-            await updateInvoiceStatus(id);
+            setUpdatingStatus(true);
+            const updated = await updateInvoiceStatus(id);
+            // Response của PUT không populate bệnh nhân/lịch hẹn nên chỉ ghép các trường tính toán
+            setInvoice((prev) =>
+                prev
+                    ? {
+                        ...prev,
+                        status: updated?.status ?? prev.status,
+                        total_amount: updated?.total_amount ?? prev.total_amount,
+                        updated_at: updated?.updated_at ?? prev.updated_at,
+                    }
+                    : prev
+            );
+            await fetchPayments(true);
             message.success("Cập nhật trạng thái thành công");
-            await fetchInvoice();
         } catch (error: any) {
             message.error(error.message || "Không thể cập nhật trạng thái");
+        } finally {
+            setUpdatingStatus(false);
         }
     };
-    // 
+    //
 
     const handleVNPayPayment = async () => {
         if (!id) return;
@@ -301,10 +340,10 @@ export default function InvoiceDetailPage() {
             setProcessingQR(true);
             const result = await createVNPayQR({ invoice_id: id });
             if (result.paymentUrl) {
+                // Ghi nhận số thanh toán hiện tại trước khi mở QR để polling so sánh
+                qrBaselineCountRef.current = payments.length;
                 setQrCodeData(result.paymentUrl);
                 setIsQRModalVisible(true);
-                // initialize previous payments count
-                prevPaymentsCountRef.current = payments.length;
             } else {
                 throw new Error('Không nhận được payment URL từ server');
             }
@@ -344,14 +383,23 @@ export default function InvoiceDetailPage() {
             key: "action",
             render: (_: any, record: Payment) => (
                 role === "admin" && (
-                    <Button
-                        type="link"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={() => handleDeletePayment(record._id)}
+                    <Popconfirm
+                        title="Xóa thanh toán"
+                        description={`Xóa khoản thanh toán ${record.amount?.toLocaleString("vi-VN")} đ? Trạng thái hóa đơn sẽ được tính lại.`}
+                        onConfirm={() => handleDeletePayment(record._id)}
+                        okText="Xóa"
+                        cancelText="Hủy"
+                        okButtonProps={{ danger: true }}
                     >
-                        Xóa
-                    </Button>
+                        <Button
+                            type="link"
+                            danger
+                            icon={<DeleteOutlined />}
+                            loading={deletingPaymentId === record._id}
+                        >
+                            Xóa
+                        </Button>
+                    </Popconfirm>
                 )
             ),
         },
@@ -454,7 +502,7 @@ export default function InvoiceDetailPage() {
                             columns={paymentColumns}
                             dataSource={payments}
                             rowKey="_id"
-                            loading={loadingPayments}
+                            loading={refreshing}
                             pagination={false}
                             locale={{ emptyText: "Chưa có thanh toán nào" }}
                         />
@@ -493,6 +541,7 @@ export default function InvoiceDetailPage() {
                                     type="default"
                                     block
                                     onClick={handleUpdateStatus}
+                                    loading={updatingStatus}
                                 >
                                     Cập nhật trạng thái
                                 </Button>
@@ -654,20 +703,6 @@ export default function InvoiceDetailPage() {
                                 errorLevel="M"
                             />
                         )}
-
-                        <div style={{ marginTop: 12 }}>
-                            <Button
-                                type="dashed"
-                                onClick={() => {
-                                    // Create a dev mock URL that calls backend mock return directly
-                                    const mockUrl = `${BACKEND_URL}/api/payments/vnpay-mock-return?invoice_id=${id}&amount=${remaining}&__enable_mock=true`;
-                                    setQrCodeData(mockUrl);
-                                    message.info("Mock QR đã được tạo (dev). Quét để kích hoạt mock return.");
-                                }}
-                            >
-                                Tạo Mock QR (dev)
-                            </Button>
-                        </div>
 
                         <div>
                             <Text type="secondary" style={{ fontSize: "12px" }}>

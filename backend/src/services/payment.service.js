@@ -15,6 +15,9 @@ function parseAmount(value) {
   return amount;
 }
 
+const duplicateTxnError = () =>
+  Object.assign(new Error('Giao dịch VNPay này đã được ghi nhận'), { status: 409, code: 'DUPLICATE_TXN' });
+
 async function sumActivePayments(invoiceId, excludeId = null) {
   const filter = { invoice_id: invoiceId, disabled: false };
   if (excludeId) filter._id = { $ne: excludeId };
@@ -26,6 +29,7 @@ class PaymentService {
   // Kế thừa
   // Mọi thao tác thay đổi số tiền đều chạy trong khóa theo hóa đơn: 2 khoản thanh toán gửi cùng lúc
   // không thể cùng vượt qua bước kiểm tra "còn lại" và làm hóa đơn bị trả vượt.
+  // data đã được lọc ở nơi gọi; vnp_txn_ref/vnp_transaction_no chỉ do IPN VNPay truyền vào.
   async create(data) {
     const amount = parseAmount(data.amount);
     const invoiceId = data.invoice_id;
@@ -35,12 +39,23 @@ class PaymentService {
     if (invoice.disabled) throw Object.assign(new Error('Hóa đơn đã bị xóa'), { status: 400 });
 
     return withDocLock(Invoice, invoiceId, async () => {
+      // IPN gọi lặp lại cho cùng giao dịch VNPay -> không ghi lần 2 (kiểm tra trước bước "còn lại")
+      if (data.vnp_txn_ref && (await Payment.exists({ vnp_txn_ref: data.vnp_txn_ref }))) {
+        throw duplicateTxnError();
+      }
+
       const totalPaid = await sumActivePayments(invoiceId);
       if (toCents(totalPaid) + toCents(amount) > toCents(invoice.total_amount)) {
         throw Object.assign(new Error('Số tiền thanh toán vượt quá số tiền còn lại'), { status: 400 });
       }
 
-      const payment = await paymentDao.create({ ...data, amount });
+      let payment;
+      try {
+        payment = await paymentDao.create({ ...data, amount });
+      } catch (err) {
+        if (err.code === 11000 && err.keyPattern?.vnp_txn_ref) throw duplicateTxnError();
+        throw err;
+      }
       await this.#updateInvoiceStatus(invoiceId);
       return payment;
     });
@@ -74,10 +89,15 @@ class PaymentService {
     const payment = await paymentDao.findById(id);
     if (!payment) throw Object.assign(new Error('Thanh toán không tồn tại'), { status: 404 });
 
-    await paymentDao.delete(id);
-    if (await Invoice.exists({ _id: payment.invoice_id })) {
-      await this.#updateInvoiceStatus(payment.invoice_id);
+    if (!(await Invoice.exists({ _id: payment.invoice_id }))) {
+      await paymentDao.delete(id);
+      return;
     }
+    // Cùng khóa với tạo/sửa thanh toán để trạng thái hóa đơn không bị tính trên dữ liệu cũ
+    await withDocLock(Invoice, payment.invoice_id, async () => {
+      await paymentDao.delete(id);
+      await this.#updateInvoiceStatus(payment.invoice_id);
+    });
   }
 
   async restore(id) {

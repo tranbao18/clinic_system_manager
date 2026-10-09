@@ -55,7 +55,8 @@ export default function AddPatientPage() {
 
       const formattedValues: Partial<Patient> = {
         fullname: values.fullname,
-        dob: values.dob ? values.dob.toISOString() : null,
+        // Ngày sinh là ngày thuần: toISOString() sẽ lùi 1 ngày ở múi giờ UTC+7
+        dob: values.dob ? dayjs(values.dob).format("YYYY-MM-DD") : undefined,
         gender: values.gender,
         address: values.address,
         phone: values.phone,
@@ -66,9 +67,9 @@ export default function AddPatientPage() {
       await createPatient(formattedValues);
       message.success("Thêm bệnh nhân thành công!");
       router.push("/dashboard/patients");
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      message.error("Không thể thêm bệnh nhân");
+      message.error(error?.message || "Không thể thêm bệnh nhân");
     } finally {
       setSaving(false);
     }

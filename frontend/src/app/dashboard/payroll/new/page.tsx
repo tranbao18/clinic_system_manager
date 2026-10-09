@@ -90,19 +90,21 @@ export default function NewPayrollPage() {
     try {
       setLoading(true);
 
+      // net_salary do backend tự tính (ô "Lương thực nhận" chỉ là xem trước).
+      // paydate gửi dạng YYYY-MM-DD: toISOString() đổi sang UTC làm lệch về ngày/tháng trước với giờ Việt Nam
       const payload: CreatePayrollData = {
         employee_id: values.employee_id,
         basic_salary: values.basic_salary,
         bonus: values.bonus || 0,
         deductions: values.deductions || 0,
-        net_salary: values.net_salary || (values.basic_salary + (values.bonus || 0) - (values.deductions || 0)),
-        paydate: dayjs(values.paydate).toISOString(),
+        paydate: dayjs(values.paydate).format("YYYY-MM-DD"),
       };
 
       await PayrollService.create(payload);
       message.success("Tạo bảng lương thành công!");
       router.push("/dashboard/payroll");
     } catch (error: any) {
+      // Hiển thị thông báo của backend (vd: lương thực nhận âm, đã có bảng lương tháng này)
       message.error(error.message || "Lỗi khi tạo bảng lương");
     } finally {
       setLoading(false);

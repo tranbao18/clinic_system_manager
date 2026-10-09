@@ -8,6 +8,19 @@ class PatientService {
   async deleteCascade(patientId, hard = false) {
     try {
       if (hard) {
+        // Hóa đơn là chứng từ tài chính: bệnh nhân đã có hóa đơn (kể cả đã xóa mềm) thì không được xóa vĩnh viễn,
+        // tránh hóa đơn trỏ tới bệnh nhân/lịch hẹn không còn tồn tại
+        const appointmentIds = await AppointmentDAO.model.distinct('_id', { patient_id: patientId });
+        const hasInvoice = await InvoiceDAO.model.exists({
+          $or: [{ patient_id: patientId }, { appointment_id: { $in: appointmentIds } }],
+        });
+        if (hasInvoice) {
+          throw Object.assign(
+            new Error('Bệnh nhân đã có hóa đơn nên không thể xóa vĩnh viễn. Hãy dùng xóa thông thường (xóa mềm).'),
+            { status: 400 }
+          );
+        }
+
         await AppointmentDAO.model.deleteMany({ patient_id: patientId });
         await MedicalRecordDAO.model.deleteMany({ patient_id: patientId });
         await UserDAO.model.deleteMany({ patient_id: patientId });

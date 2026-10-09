@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Table,
     Button,
@@ -18,9 +18,17 @@ import { UndoOutlined, ArrowLeftOutlined } from "@ant-design/icons";
 
 const { Search } = Input;
 
+const normalizeText = (str: string) =>
+    str
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9\s]/g, "")
+        .toLowerCase()
+        .trim();
+
 export default function DisabledMedicinesPage() {
+    // Danh sách gốc = thuốc đã xóa (GET /api/medicines?disabled=true); danh sách hiển thị suy ra từ ô tìm kiếm
     const [medicines, setMedicines] = useState<Medicine[]>([]);
-    const [filteredMedicines, setFilteredMedicines] = useState<Medicine[]>([]);
     const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
     const [deletingIds, setDeletingIds] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
@@ -33,10 +41,11 @@ export default function DisabledMedicinesPage() {
             setLoading(true);
             const data = await getDisabledMedicines();
             setMedicines(data);
-            setFilteredMedicines(data);
+            // Bỏ các lựa chọn không còn trong Thùng rác
+            setSelectedRowKeys((prev) => prev.filter((key) => data.some((m) => m._id === key)));
         } catch (error) {
             console.error("Fetch disabled medicines error:", error);
-            message.error("Không thể tải danh sách thuốc đã xóa");
+            message.error(error instanceof Error ? error.message : "Không thể tải danh sách thuốc đã xóa");
         } finally {
             setLoading(false);
         }
@@ -47,32 +56,22 @@ export default function DisabledMedicinesPage() {
     }, []);
     // 
 
-    const normalizeText = (str: string) =>
-        str
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-zA-Z0-9\s]/g, "")
-            .toLowerCase()
-            .trim();
+    const filteredMedicines = useMemo(() => {
+        const search = normalizeText(searchText);
+        if (!search) return medicines;
+        return medicines.filter((item) => {
+            const nameMatch = normalizeText(item.name).includes(search);
+            const categories = Array.isArray(item.category) ? item.category : (item.category ? [item.category] : []);
+            const categoryMatch = categories.some((cat) =>
+                normalizeText(cat).includes(search)
+            );
+            return nameMatch || categoryMatch;
+        });
+    }, [medicines, searchText]);
 
     // TỰ VIẾT
     const onSearch = (value: string) => {
         setSearchText(value);
-        const search = normalizeText(value);
-
-        if (!search) {
-            setFilteredMedicines(medicines);
-        } else {
-            const filtered = medicines.filter((item) => {
-                const nameMatch = normalizeText(item.name).includes(search);
-                const categories = Array.isArray(item.category) ? item.category : (item.category ? [item.category] : []);
-                const categoryMatch = categories.some((cat) =>
-                    normalizeText(cat).includes(search)
-                );
-                return nameMatch || categoryMatch;
-            });
-            setFilteredMedicines(filtered);
-        }
     };
 
     const handleRestore = async (_id: string) => {
@@ -80,8 +79,8 @@ export default function DisabledMedicinesPage() {
             await restoreMedicine(_id);
             message.success("Đã khôi phục thuốc");
             fetchMedicines();
-        } catch {
-            message.error("Khôi phục thất bại");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "Khôi phục thất bại");
         }
     };
 

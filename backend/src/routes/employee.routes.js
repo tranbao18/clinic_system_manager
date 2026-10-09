@@ -9,7 +9,7 @@ import validator from '../validators/employee.validator.js';
 router.post('/', auth("Admin"), validator.createEmployee(), validate, ctrl.create);
 
 router.get('/getalldoc', auth("Patient"), ctrl.getAllDoctor);
-router.get('/', auth(["Admin", "Receptionist", "Doctor", "Accountant"]), ctrl.findAll);
+router.get('/', auth(["Admin", "Receptionist", "Doctor", "Accountant", "Pharmacist"]), ctrl.findAll);
 router.get('/:id', auth("Admin"), ctrl.findById);
 
 router.put('/:id', auth("Admin"), validator.updateEmployee(), validate, ctrl.update);

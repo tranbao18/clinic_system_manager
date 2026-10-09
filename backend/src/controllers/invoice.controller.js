@@ -8,6 +8,7 @@ import withDocLock from '../utils/doc-lock.js';
 import Appointment from '../models/appointment.model.js';
 import { aggregatePrescriptions, deductForPrescriptions, releaseDeductions } from '../services/inventory.service.js';
 
+import errorStatus from '../utils/error-status.js';
 // Trạng thái hóa đơn luôn suy ra từ tổng tiền đã thanh toán, không tin giá trị client gửi
 async function computeInvoiceStatus(invoiceId, totalAmount) {
   const payments = await Payment.find({ invoice_id: invoiceId, disabled: false });
@@ -25,7 +26,7 @@ class InvoiceController {
       const result = await dao.create(pickFields(req.body, ['patient_id', 'appointment_id', 'total_amount']));
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -139,7 +140,7 @@ class InvoiceController {
 
       res.status(201).json(populatedInvoice);
     } catch (err) {
-      return res.status(err.status || 500).json({
+      return res.status(errorStatus(err)).json({
         error: err.message,
         ...(err.invoice_id && { invoice_id: err.invoice_id }),
         ...(err.shortages && { shortages: err.shortages })
@@ -160,7 +161,7 @@ class InvoiceController {
       const result = await dao.findAll(filter);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -170,7 +171,7 @@ class InvoiceController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -194,16 +195,25 @@ class InvoiceController {
       const result = await dao.update(req.params.id, data);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
   async remove(req, res) {
     try {
+      // ?hard=true: xóa vĩnh viễn (chỉ Admin, chỉ hóa đơn đã xóa mềm); mặc định vẫn là xóa mềm
+      if (req.query?.hard === 'true') {
+        if (req.user?.role !== 'Admin') {
+          return res.status(403).json({ error: 'Chỉ Admin được xóa vĩnh viễn hóa đơn' });
+        }
+        await InvoiceService.hardDelete(req.params.id);
+        return res.json({ message: 'Invoice hard deleted (permanent)' });
+      }
+
       await InvoiceService.deleteCascade(req.params.id);
       res.json({ message: 'Deleted with cascade' });
     } catch (err) {
-      res.status(err.status || 500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -212,7 +222,7 @@ class InvoiceController {
       await InvoiceService.restoreCascade(req.params.id);
       res.json({ message: 'Invoice restore with cascade' });
     } catch (err) {
-      res.status(err.status || 500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -221,7 +231,7 @@ class InvoiceController {
       const result = await dao.findByPatientId(req.params.id);
       res.json(Array.isArray(result) ? result : []);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 }

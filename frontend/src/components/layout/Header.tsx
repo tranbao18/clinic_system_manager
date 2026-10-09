@@ -13,9 +13,24 @@ import {
 import { useEffect, useState } from "react";
 import { UserOutlined } from "@ant-design/icons";
 import AuthService from "@/lib/services/authService";
+import { clearAllTokens } from "@/lib/authHeaderClient";
 import NotificationBell from "./NotificationBell";
 
 const { Header: AntHeader } = Layout;
+
+/**
+ * Đăng xuất đầy đủ: thu hồi token ở backend + hủy cookie iron-session (qua /api/auth/logout),
+ * rồi xóa token phía trình duyệt. Dùng chung cho Header và Navbar.
+ */
+export async function logoutSession(): Promise<void> {
+  try {
+    await AuthService.logout();
+  } catch (err) {
+    console.error("Logout failed", err);
+  } finally {
+    clearAllTokens();
+  }
+}
 
 export default function Header() {
   const router = useRouter();
@@ -43,19 +58,8 @@ export default function Header() {
   }, [router]);
 
   const handleLogout = async () => {
-    try {
-      await AuthService.logout();
-
-      await fetch("/auth/logout", {
-        method: "POST",
-        credentials: "include",
-      });
-
-      router.push("/auth/login");
-    } catch (err) {
-      console.error("Logout failed", err);
-      router.push("/auth/login");
-    }
+    await logoutSession();
+    router.push("/auth/login");
   };
 
   if (loading) return null;

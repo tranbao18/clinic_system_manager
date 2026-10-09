@@ -21,7 +21,7 @@ import {
     DialogDescription,
 } from "@/components/ui/dialog";
 import SchedulesService, { ShiftSchedule } from "@/lib/services/schedulesService";
-import { getAppointments, Appointment } from "@/lib/services/appointmentsService";
+import { getAppointments, Appointment, toIdString } from "@/lib/services/appointmentsService";
 import EmployeesService from "@/lib/services/employeesService";
 
 interface ScheduleItem {
@@ -37,6 +37,106 @@ interface ScheduleDetail extends ScheduleItem {
 }
 
 const weekdays = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+
+const DEFAULT_SHIFT_START = "08:00";
+const DEFAULT_SHIFT_END = "16:00";
+const MIN_SHIFT_MINUTES = 8 * 60;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+const toMinutes = (time: string): number => {
+    const [hours, minutes] = time.split(":").map(Number);
+    return hours * 60 + minutes;
+};
+
+// Ca qua đêm (dữ liệu cũ, end <= start) được tính sang ngày hôm sau khi so trùng
+const shiftRange = (item: ScheduleItem): [number, number] => {
+    const start = toMinutes(item.start);
+    let end = toMinutes(item.end);
+    if (end <= start) end += 24 * 60;
+    return [start, end];
+};
+
+// Chuẩn hóa về [{ date, start, end }] và bỏ các key ngoài schema (vd: _id)
+function normalizeShifts(raw: unknown): ScheduleItem[] {
+    if (!raw) return [];
+    if (Array.isArray(raw)) {
+        return raw
+            .map((item): ScheduleItem | null => {
+                if (typeof item === "string") {
+                    return { date: item, start: DEFAULT_SHIFT_START, end: DEFAULT_SHIFT_END };
+                }
+                if (item && typeof item === "object" && (item as any).date) {
+                    return {
+                        date: String((item as any).date),
+                        start: String((item as any).start || DEFAULT_SHIFT_START),
+                        end: String((item as any).end || DEFAULT_SHIFT_END),
+                    };
+                }
+                return null;
+            })
+            .filter((item): item is ScheduleItem => item !== null);
+    }
+    if (typeof raw === "object") {
+        return Object.keys(raw as Record<string, any>).map((date) => {
+            const val = (raw as Record<string, any>)[date];
+            return {
+                date,
+                start: String(val?.start || DEFAULT_SHIFT_START),
+                end: String(val?.end || DEFAULT_SHIFT_END),
+            };
+        });
+    }
+    return [];
+}
+
+const isSameShift = (a: ScheduleItem, b: ScheduleItem) =>
+    a.date === b.date && a.start === b.start && a.end === b.end;
+
+function validateShiftTimes(start: string, end: string): string | null {
+    if (!TIME_RE.test(start) || !TIME_RE.test(end)) {
+        return "Giờ trực không hợp lệ (định dạng HH:mm)";
+    }
+    let diff = toMinutes(end) - toMinutes(start);
+    if (diff === 0) return "Giờ bắt đầu và giờ kết thúc không được trùng nhau";
+    if (diff < 0) diff += 24 * 60; // ca qua đêm (vd 22:00 - 06:00), backend cũng chấp nhận
+    if (diff < MIN_SHIFT_MINUTES) return "Thời gian trực phải tối thiểu 8 giờ";
+    return null;
+}
+
+// Thêm ca mới (original = null) hoặc thay đúng ca đang sửa; một ngày có thể có nhiều ca miễn không trùng giờ
+function applyShiftChange(
+    list: ScheduleItem[],
+    original: ScheduleItem | null,
+    next: ScheduleItem
+): { items: ScheduleItem[]; error?: string } {
+    const items = normalizeShifts(list);
+    let index = -1;
+    if (original) {
+        index = items.findIndex((item) => isSameShift(item, original));
+        if (index < 0) {
+            return { items, error: "Ca trực cần sửa không còn tồn tại. Vui lòng tải lại trang." };
+        }
+    }
+    const [nextStart, nextEnd] = shiftRange(next);
+    const overlap = items.find((item, idx) => {
+        if (idx === index || item.date !== next.date) return false;
+        const [start, end] = shiftRange(item);
+        return start < nextEnd && nextStart < end;
+    });
+    if (overlap) {
+        return { items, error: `Ca trực bị trùng giờ với ca ${overlap.start} - ${overlap.end} trong cùng ngày` };
+    }
+    if (index >= 0) items[index] = next;
+    else items.push(next);
+    return { items };
+}
+
+function removeShift(list: ScheduleItem[], target: ScheduleItem): ScheduleItem[] {
+    const items = normalizeShifts(list);
+    const index = items.findIndex((item) => isSameShift(item, target));
+    if (index >= 0) items.splice(index, 1);
+    return items;
+}
 
 function formatDateDisplay(dateStr: string): string {
     if (!dateStr) return "";
@@ -200,7 +300,8 @@ export default function SchedulesPage() {
         const details: ScheduleDetail[] = [];
 
         schedules.forEach((schedule) => {
-            if (!schedule.shift_schedule || !Array.isArray(schedule.shift_schedule)) return;
+            const shifts = normalizeShifts(schedule.shift_schedule);
+            if (shifts.length === 0) return;
 
             let position = schedule.employee_position;
             if (!position && role === "admin") {
@@ -208,7 +309,7 @@ export default function SchedulesPage() {
                 position = employee?.position;
             }
 
-            schedule.shift_schedule.forEach((item: ScheduleItem) => {
+            shifts.forEach((item: ScheduleItem) => {
                 if (item.date === dateStr) {
                     details.push({
                         ...item,
@@ -274,19 +375,6 @@ export default function SchedulesPage() {
         setOpenDeleteDialog(true);
     };
 
-    const validateTimeRange = (start: string, end: string): boolean => {
-        const [startHours, startMinutes] = start.split(':').map(Number);
-        const [endHours, endMinutes] = end.split(':').map(Number);
-
-        const startTotal = startHours * 60 + startMinutes;
-        const endTotal = endHours * 60 + endMinutes;
-
-        let diff = endTotal - startTotal;
-        if (diff < 0) diff += 24 * 60; // Add 24 hours if overnight
-
-        return diff >= 8 * 60; // At least 8 hours (480 minutes)
-    };
-
     const handleSave = async () => {
         try {
             if (!formEmployeeId) {
@@ -304,8 +392,9 @@ export default function SchedulesPage() {
                 return;
             }
 
-            if (!validateTimeRange(formStart, formEnd)) {
-                showNotification("warning", "Thời gian trực phải tối thiểu 8 giờ. Vui lòng kiểm tra lại thời gian bắt đầu và kết thúc.");
+            const timeError = validateShiftTimes(formStart, formEnd);
+            if (timeError) {
+                showNotification("warning", timeError);
                 return;
             }
 
@@ -315,28 +404,19 @@ export default function SchedulesPage() {
                 end: formEnd,
             };
 
-            const existingSchedule = schedules.find(s => s.employee_id === formEmployeeId);
-            let newSchedule: ScheduleItem[] = [];
-
-            if (existingSchedule && Array.isArray(existingSchedule.shift_schedule)) {
-                newSchedule = [...existingSchedule.shift_schedule];
-
-                if (editingScheduleDetail && editingScheduleDetail.employee_id === formEmployeeId) {
-                    newSchedule = newSchedule.filter(
-                        item => !(item.date === editingScheduleDetail.date &&
-                            item.start === editingScheduleDetail.start &&
-                            item.end === editingScheduleDetail.end)
-                    );
-                }
-
-                const existingIndex = newSchedule.findIndex(item => item.date === dateToSave);
-                if (existingIndex >= 0) {
-                    newSchedule[existingIndex] = scheduleItem;
-                } else {
-                    newSchedule.push(scheduleItem);
-                }
-            } else {
-                newSchedule = [scheduleItem];
+            const existingSchedule = schedules.find(s => toIdString(s.employee_id) === formEmployeeId);
+            // Sửa đúng ca đã chọn (theo ngày + giờ bắt đầu + giờ kết thúc), không ghi đè theo ngày
+            const originalShift = editingScheduleDetail && editingScheduleDetail.employee_id === formEmployeeId
+                ? { date: editingScheduleDetail.date, start: editingScheduleDetail.start, end: editingScheduleDetail.end }
+                : null;
+            const { items: newSchedule, error: shiftError } = applyShiftChange(
+                normalizeShifts(existingSchedule?.shift_schedule),
+                originalShift,
+                scheduleItem
+            );
+            if (shiftError) {
+                showNotification("warning", shiftError);
+                return;
             }
 
             if (editingScheduleDetail) {
@@ -364,14 +444,14 @@ export default function SchedulesPage() {
         if (!editingScheduleDetail) return;
 
         try {
-            const existingSchedule = schedules.find(s => s.employee_id === editingScheduleDetail.employee_id);
+            const existingSchedule = schedules.find(s => toIdString(s.employee_id) === editingScheduleDetail.employee_id);
 
-            if (existingSchedule && Array.isArray(existingSchedule.shift_schedule)) {
-                const newSchedule = existingSchedule.shift_schedule.filter(
-                    item => !(item.date === editingScheduleDetail.date &&
-                        item.start === editingScheduleDetail.start &&
-                        item.end === editingScheduleDetail.end)
-                );
+            if (existingSchedule) {
+                const newSchedule = removeShift(normalizeShifts(existingSchedule.shift_schedule), {
+                    date: editingScheduleDetail.date,
+                    start: editingScheduleDetail.start,
+                    end: editingScheduleDetail.end,
+                });
 
                 if (newSchedule.length === 0) {
                     await SchedulesService.delete(editingScheduleDetail.employee_id);
@@ -536,7 +616,8 @@ export default function SchedulesPage() {
                                                         try {
                                                             const aptDate = new Date(apt.appointment_date);
                                                             const aptDateStr = formatDateInput(aptDate);
-                                                            return String(apt.doctor_id) === String(s.employee_id) &&
+                                                            // doctor_id đã được populate thành object → so theo id
+                                                            return toIdString(apt.doctor_id) === String(s.employee_id) &&
                                                                 aptDateStr === formatDateInput(date) &&
                                                                 (apt.status === "Completed" || apt.status === "completed" || apt.status === "Hoàn thành");
                                                         } catch (e) {
@@ -622,7 +703,7 @@ export default function SchedulesPage() {
                         <DialogDescription>
                             {editingScheduleDetail
                                 ? "Cập nhật thông tin lịch trực."
-                                : "Điền thông tin để tạo lịch trực mới. Thời gian trực tối thiểu là 8 giờ."}
+                                : "Điền thông tin để tạo lịch trực mới. Thời gian trực tối thiểu là 8 giờ; một ngày có thể có nhiều ca không trùng giờ."}
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4">
@@ -791,9 +872,9 @@ export default function SchedulesPage() {
                                 value={formEnd}
                                 onChange={(e) => setFormEnd(e.target.value)}
                             />
-                            {!validateTimeRange(formStart, formEnd) && formStart && formEnd && (
+                            {formStart && formEnd && validateShiftTimes(formStart, formEnd) && (
                                 <p className="text-sm text-red-500 mt-1">
-                                    Thời gian trực phải tối thiểu 8 giờ
+                                    {validateShiftTimes(formStart, formEnd)}
                                 </p>
                             )}
                         </div>

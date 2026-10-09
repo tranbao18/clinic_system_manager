@@ -5,6 +5,29 @@ import { getAuthHeaderServer } from "@/lib/authHeaderServer";
 const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://meppod.onrender.com";
 const APPOINTMENTS_URL = `${API_URL}/api/appointments`;
 
+// Đọc body đúng một lần (tránh lỗi "Body is unusable")
+async function readBody(res: Response): Promise<{ data: any; text: string }> {
+    const text = await res.text();
+    try {
+        return { data: text ? JSON.parse(text) : null, text };
+    } catch {
+        return { data: null, text };
+    }
+}
+
+// Giữ nguyên status và thông điệp lỗi của backend (vd: 409 trùng lịch)
+function backendError(status: number, data: any, text: string, fallback: string) {
+    const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    return NextResponse.json(
+        {
+            ...body,
+            error: body.error || body.message || fallback,
+            ...(data === null && text ? { detail: text.slice(0, 500) } : {}),
+        },
+        { status }
+    );
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     try {
         const { id } = await params;
@@ -16,17 +39,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         }
 
         const res = await fetch(`${APPOINTMENTS_URL}/${id}`, { cache: "no-store", headers });
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error(`External API (GET appointment ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: "Không tìm thấy lịch hẹn", detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không tìm thấy lịch hẹn");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? {});
     } catch (err: any) {
         console.error("GET /api/appointments/[id] exception:", err);
         return NextResponse.json({ error: err.message || "Lỗi hệ thống" }, { status: 500 });
@@ -52,18 +71,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
             body: JSON.stringify(body),
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
-
             console.error(`External API (PUT appointment ${id}) error:`, res.status, text);
-            return NextResponse.json(
-                { error: `Không thể cập nhật lịch hẹn ${id}`, detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không thể cập nhật lịch hẹn");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? {});
     } catch (err: any) {
         console.error("PUT /api/appointments/[id] exception:", err);
         return NextResponse.json({ error: err.message || "Lỗi hệ thống" }, { status: 500 });
@@ -80,27 +94,23 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
             headers.Authorization = authHeaders.Authorization;
         }
 
-        const backendUrl = `${APPOINTMENTS_URL}/${id}?hard=true`;
-        console.log(`🔄 [API ROUTE] Proxying DELETE to backend: ${backendUrl}`);
+        // Chuyển tiếp nguyên query của client; mặc định backend xóa mềm, hard=true chỉ có hiệu lực với Admin
+        const { search } = new URL(req.url);
+        const backendUrl = `${APPOINTMENTS_URL}/${id}${search}`;
 
         const res = await fetch(backendUrl, { method: "DELETE", headers });
-
-        console.log(`🔄 [API ROUTE] Backend response status: ${res.status}`);
+        const { data, text } = await readBody(res);
 
         if (!res.ok) {
-            const text = await res.text();
-            console.error(`❌ [API ROUTE] Backend error:`, res.status, text);
-            return NextResponse.json(
-                { error: `Không thể xóa lịch hẹn ${id}`, detail: text },
-                { status: res.status }
-            );
+            console.error(`❌ [API ROUTE] DELETE appointment ${id} error:`, res.status, text);
+            return backendError(res.status, data, text, "Không thể xóa lịch hẹn");
         }
 
-        console.log(`✅ [API ROUTE] Successfully deleted appointment: ${id}`);
-        return NextResponse.json({ message: "Xóa lịch hẹn thành công" });
+        return NextResponse.json(
+            data && typeof data === "object" ? data : { message: "Xóa lịch hẹn thành công" }
+        );
     } catch (err: any) {
         console.error("DELETE /api/appointments/[id] exception:", err);
         return NextResponse.json({ error: err.message || "Lỗi hệ thống" }, { status: 500 });
     }
 }
-

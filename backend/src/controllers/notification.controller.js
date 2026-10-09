@@ -1,6 +1,7 @@
 import dao from '../dao/notification.dao.js';
 import pickFields from '../utils/pick-fields.js';
 
+import errorStatus from '../utils/error-status.js';
 const CREATE_FIELDS = ['recipient_id', 'recipient_role', 'type', 'title', 'message', 'related_id', 'related_type'];
 
 class NotificationController {
@@ -9,7 +10,7 @@ class NotificationController {
       const result = await dao.create(pickFields(req.body, CREATE_FIELDS));
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -34,7 +35,7 @@ class NotificationController {
       const result = await dao.findByRecipient(userId, filter);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -57,7 +58,7 @@ class NotificationController {
       const count = await dao.getUnreadCount(userId, filter);
       res.json({ count });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
   //
@@ -75,7 +76,7 @@ class NotificationController {
       }
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -89,7 +90,7 @@ class NotificationController {
       await dao.markAllAsRead(userId);
       res.json({ message: 'All notifications marked as read' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -110,7 +111,7 @@ class NotificationController {
       }
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -128,7 +129,7 @@ class NotificationController {
       await dao.delete(req.params.id);
       res.json({ message: 'Deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -137,7 +138,7 @@ class NotificationController {
       await dao.restore(req.params.id);
       res.json({ message: 'Restored' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

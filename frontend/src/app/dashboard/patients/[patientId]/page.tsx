@@ -41,7 +41,7 @@ import {
     getInvoicesByPatientId,
     Invoice,
 } from "@/lib/services/invoiceService";
-import { getAppointments, Appointment, updateAppointment } from "@/lib/services/appointmentsService";
+import { getAppointments, Appointment, updateAppointment, toIdString } from "@/lib/services/appointmentsService";
 
 const mapGenderToApiValue = (gender: string) => {
     if (gender === "Nam") return "Male";
@@ -54,6 +54,63 @@ const mapGenderFromApiValue = (gender: string) => {
     if (gender === "Female") return "Nữ";
     return gender;
 };
+
+// Chuẩn hóa ngày sinh về YYYY-MM-DD cho ô nhập <input type="date">
+const toDateOnly = (value?: string | null): string => {
+    if (!value) return "";
+    const str = String(value);
+    // Ngày lưu dạng UTC 00:00 (gửi lên là YYYY-MM-DD) → giữ nguyên phần ngày
+    const exact = str.match(/^(\d{4}-\d{2}-\d{2})(T00:00:00(\.0+)?Z)?$/);
+    if (exact) return exact[1];
+    // Dữ liệu cũ gửi bằng toISOString() từ giờ địa phương → đổi lại theo giờ địa phương
+    const d = dayjs(str);
+    return d.isValid() ? d.format("YYYY-MM-DD") : "";
+};
+
+// Lấy tên từ document đã populate; null/chưa populate → "—"
+const getRefName = (ref: unknown, key = "fullname"): string => {
+    if (ref && typeof ref === "object") {
+        const value = (ref as Record<string, unknown>)[key];
+        if (typeof value === "string" && value.trim()) return value;
+    }
+    return "—";
+};
+
+// GET /api/appointments trả patient_id đã populate (object) → so sánh theo id
+const filterAppointmentsForPatient = (list: Appointment[], patientId: string) =>
+    list.filter((apt) => toIdString(apt.patient_id) === patientId);
+
+const LINKABLE_APPOINTMENT_STATUSES = ["Completed", "Scheduled", "Confirmed", "In Progress"];
+
+// Lịch hẹn tốt nhất để gắn hồ sơ: chưa có hồ sơ, ưu tiên Completed rồi tới lịch gần nhất
+const pickBestAppointment = (appointments: Appointment[], records: MedicalRecord[]): Appointment | null => {
+    const linkedIds = new Set(records.map((mr) => toIdString(mr.appointment_id)).filter(Boolean));
+    const candidates = appointments
+        .filter((apt) => LINKABLE_APPOINTMENT_STATUSES.includes(apt.status) && !linkedIds.has(apt._id))
+        .sort((a, b) => {
+            if (a.status === "Completed" && b.status !== "Completed") return -1;
+            if (a.status !== "Completed" && b.status === "Completed") return 1;
+            return new Date(b.appointment_date).getTime() - new Date(a.appointment_date).getTime();
+        });
+    return candidates[0] || null;
+};
+
+// Số lượng từng thuốc đã kê trong hồ sơ đang sửa
+const getOriginalQuantities = (record: MedicalRecord | null): Record<string, number> => {
+    const result: Record<string, number> = {};
+    (record?.prescriptions || []).forEach((p) => {
+        const id = toIdString(p.medicine_id);
+        if (id) result[id] = (result[id] || 0) + (Number(p.quantity) || 0);
+    });
+    return result;
+};
+
+// Backend trả 400 kèm `shortages` khi kho không đủ thuốc để tạo hóa đơn
+interface StockShortage {
+    name?: string;
+    required?: number;
+    available?: number;
+}
 
 export default function PatientDetailPage() {
     const { patientId } = useParams<{ patientId: string }>();
@@ -98,7 +155,7 @@ export default function PatientDetailPage() {
                 const mappedData = {
                     ...data,
                     gender: mapGenderFromApiValue(data.gender),
-                    dob: data.dob ? data.dob.split("T")[0] : "",
+                    dob: toDateOnly(data.dob),
                 };
 
                 setPatient(mappedData);
@@ -128,9 +185,9 @@ export default function PatientDetailPage() {
                 setLoadingRecords(true);
                 const records = await getMedicalRecordsByPatientId(patientId);
                 setMedicalRecords(records);
-            } catch (err) {
+            } catch (err: any) {
                 console.error(err);
-                message.error("Không thể tải hồ sơ y tế");
+                message.error(err?.message || "Không thể tải hồ sơ y tế");
             } finally {
                 setLoadingRecords(false);
             }
@@ -146,15 +203,7 @@ export default function PatientDetailPage() {
         const fetchAppointments = async () => {
             try {
                 const allAppointments = await getAppointments();
-                const patientAppointments = allAppointments.filter(
-                    (apt: Appointment) => {
-                        const aptPatientId = typeof (apt.patient_id as any) === 'object' && (apt.patient_id as any)?._id
-                            ? (apt.patient_id as any)._id
-                            : apt.patient_id;
-                        return aptPatientId === patientId;
-                    }
-                );
-                setAppointments(patientAppointments);
+                setAppointments(filterAppointmentsForPatient(allAppointments, patientId));
             } catch (err) {
                 console.error("Error fetching appointments:", err);
                 setAppointments([]);
@@ -213,8 +262,16 @@ export default function PatientDetailPage() {
     // 
 
     const userRole = currentUser?.role?.toLowerCase() || "";
-    const canManageMedicalRecords = userRole === "admin" || userRole === "doctor";
-    const canPrintAndInvoice = userRole !== "receptionist";
+    const currentEmployeeId = toIdString(currentUser?.employee_id);
+    const isAdmin = userRole === "admin";
+    const canManageMedicalRecords = isAdmin || userRole === "doctor";
+    const canPrint = userRole !== "receptionist";
+    // Backend chỉ cho Admin, Kế toán, Bác sĩ tạo hóa đơn
+    const canCreateInvoiceRole = ["admin", "accountant", "doctor"].includes(userRole);
+    // Bác sĩ chỉ được sửa/xóa hồ sơ do chính mình phụ trách
+    const canEditRecord = (record: MedicalRecord) =>
+        isAdmin ||
+        (userRole === "doctor" && !!currentEmployeeId && toIdString(record.doctor_id) === currentEmployeeId);
 
     const handleUpdate = async (values: Partial<Patient>) => {
         try {
@@ -232,14 +289,15 @@ export default function PatientDetailPage() {
             const displayData = {
                 ...updated,
                 gender: mapGenderFromApiValue(updated.gender),
+                dob: toDateOnly(updated.dob),
             };
 
             setPatient(displayData);
             setIsEditing(false);
             message.success("Cập nhật thông tin thành công!");
-        } catch (error) {
+        } catch (error: any) {
             console.error(error);
-            message.error("Cập nhật thất bại");
+            message.error(error?.message || "Cập nhật thất bại");
         } finally {
             setSaving(false);
         }
@@ -267,40 +325,61 @@ export default function PatientDetailPage() {
     const formatDateTime = (date: string) =>
         date ? dayjs(date).format("DD/MM/YYYY HH:mm") : "—";
 
+    const originalQuantities = getOriginalQuantities(editingRecord);
+
+    // Thuốc hết hàng vẫn hiện nếu đã có trong toa đang sửa (để không mất thuốc đã kê)
+    const medicineOptions = medicines
+        .filter((med) => (med.total_remaining || 0) > 0 || !!originalQuantities[med._id])
+        .map((med) => ({
+            value: med._id,
+            label: `${med.name} (${med.unit}) - Còn ${med.total_remaining || 0}`,
+        }));
+    (editingRecord?.prescriptions || []).forEach((p) => {
+        const id = toIdString(p.medicine_id);
+        if (id && !medicineOptions.some((o) => o.value === id)) {
+            medicineOptions.push({ value: id, label: `${getRefName(p.medicine_id, "name")} (đã kê)` });
+        }
+    });
+
+    // Kiểm tra tồn kho; thuốc đã kê sẵn trong hồ sơ đang sửa được giữ tới số lượng cũ dù kho đã hết
+    const getStockError = (medicineId: string, quantity?: number): string | null => {
+        const originalQty = originalQuantities[medicineId] || 0;
+        const medicine = medicines.find((m) => m._id === medicineId);
+        if (!medicine) {
+            if (originalQty > 0) {
+                return quantity && quantity > originalQty
+                    ? `Không thể tăng số lượng thuốc này vượt quá ${originalQty} (thuốc không còn trong danh mục)`
+                    : null;
+            }
+            return `Không tìm thấy thông tin thuốc với ID: ${medicineId}`;
+        }
+        const stockQuantity = medicine.total_remaining || 0;
+        const unit = medicine.unit || "đơn vị";
+        if (originalQty > 0) {
+            const maxAllowed = Math.max(originalQty, stockQuantity);
+            return quantity && quantity > maxAllowed
+                ? `Không đủ hàng trong kho cho thuốc ${medicine.name}. Tối đa ${maxAllowed} ${unit} (đã kê ${originalQty}, tồn kho ${stockQuantity})`
+                : null;
+        }
+        if (stockQuantity <= 0) return `Thuốc ${medicine.name} đã hết hàng trong kho`;
+        if (quantity && quantity > stockQuantity) {
+            return `Không đủ hàng trong kho cho thuốc ${medicine.name}. Chỉ còn ${stockQuantity} ${unit}`;
+        }
+        return null;
+    };
+
     const handleMedicalRecordSubmit = async (values: any) => {
         try {
             setSavingRecord(true);
 
-            const rawDoctorId = currentUser?.employee_id || currentUser?._id;
-            const doctorId = typeof rawDoctorId === "object" && rawDoctorId ? (rawDoctorId as any)._id : rawDoctorId;
-            if (!doctorId) {
-                message.error("Không tìm thấy thông tin bác sĩ. Vui lòng đăng nhập lại.");
-                return;
-            }
+            const validPrescriptions = (values.prescriptions || [])
+                .filter((p: any) => p && p.medicine_id && p.quantity && p.dosage)
+                .map((p: any) => ({ medicine_id: p.medicine_id, quantity: p.quantity, dosage: p.dosage }));
 
-            const validPrescriptions = (values.prescriptions || []).filter(
-                (p: any) => p.medicine_id && p.quantity && p.dosage
-            );
-
-            // Kiểm tra tồn kho trước khi tạo
             for (const p of validPrescriptions) {
-                const medicine = medicines.find(m => m._id === p.medicine_id);
-                if (!medicine) {
-                    message.error(`Không tìm thấy thông tin thuốc với ID: ${p.medicine_id}`);
-                    setSavingRecord(false);
-                    return;
-                }
-
-                const stockQuantity = medicine.total_remaining || 0;
-                if (stockQuantity <= 0) {
-                    message.error(`Thuốc ${medicine.name} đã hết hàng trong kho`);
-                    setSavingRecord(false);
-                    return;
-                }
-
-                if (p.quantity > stockQuantity) {
-                    message.error(`Không đủ hàng trong kho cho thuốc ${medicine.name}. Chỉ còn ${stockQuantity} ${medicine.unit || 'đơn vị'}`);
-                    setSavingRecord(false);
+                const stockError = getStockError(String(p.medicine_id), Number(p.quantity));
+                if (stockError) {
+                    message.error(stockError);
                     return;
                 }
             }
@@ -313,72 +392,65 @@ export default function PatientDetailPage() {
             const duplicateMedId = Object.keys(medIdCounts).find((k) => medIdCounts[k] > 1);
             if (duplicateMedId) {
                 message.error("Không được kê trùng cùng một loại thuốc trong cùng một toa");
-                setSavingRecord(false);
                 return;
             }
 
-            const payload: any = {
-                patient_id: typeof patientId === "object" && patientId ? (patientId as any)._id : patientId,
-                doctor_id: doctorId,
-                diagnosis: values.diagnosis,
-            };
-
-            console.debug("🔁 Creating medical record with payload:", payload);
-
-            if (values.treatment) payload.treatment = values.treatment;
-            if (values.notes) payload.notes = values.notes;
-            if (validPrescriptions.length > 0) payload.prescriptions = validPrescriptions;
-
-            if (!editingRecord && !values.appointment_id) {
-                const validStatuses = ['Completed', 'Scheduled', 'Confirmed', 'In Progress'];
-                const availableAppointments = appointments
-                    .filter((apt: Appointment) => {
-                        if (!validStatuses.includes(apt.status)) return false;
-                        const hasMedicalRecord = medicalRecords.some(
-                            (mr: MedicalRecord) => {
-                                const mrAppointmentId = typeof mr.appointment_id === 'object'
-                                    ? mr.appointment_id._id
-                                    : mr.appointment_id;
-                                return mrAppointmentId === apt._id;
-                            }
-                        );
-                        return !hasMedicalRecord;
-                    })
-                    .sort((a: Appointment, b: Appointment) => {
-                        if (a.status === 'Completed' && b.status !== 'Completed') return -1;
-                        if (a.status !== 'Completed' && b.status === 'Completed') return 1;
-                        return new Date(b.appointment_date).getTime() - new Date(a.appointment_date).getTime();
-                    });
-
-                console.log('🔍 Tìm appointment để link:', {
-                    totalAppointments: appointments.length,
-                    availableAppointments: availableAppointments.length,
-                    appointmentsList: availableAppointments.map(a => ({
-                        _id: a._id,
-                        status: a.status,
-                        date: a.appointment_date
-                    }))
-                });
-
-            } else if (values.appointment_id) {
-                payload.appointment_id = values.appointment_id;
-            } else if (editingRecord && editingRecord.appointment_id) {
-                payload.appointment_id = typeof editingRecord.appointment_id === 'object'
-                    ? editingRecord.appointment_id._id
-                    : editingRecord.appointment_id;
-            }
+            let linkedAppointmentId = "";
 
             if (editingRecord) {
-                await updateMedicalRecord(editingRecord._id, payload);
+                // Gửi rõ "" / [] để xóa được điều trị, ghi chú hoặc toàn bộ toa thuốc (backend gộp theo field)
+                await updateMedicalRecord(editingRecord._id, {
+                    diagnosis: values.diagnosis,
+                    treatment: values.treatment ?? "",
+                    notes: values.notes ?? "",
+                    prescriptions: validPrescriptions,
+                });
+                linkedAppointmentId = toIdString(editingRecord.appointment_id);
                 message.success("Cập nhật hồ sơ y tế thành công!");
             } else {
+                const doctorId = toIdString(currentUser?.employee_id) || toIdString(currentUser?._id);
+                if (!doctorId) {
+                    message.error("Không tìm thấy thông tin bác sĩ. Vui lòng đăng nhập lại.");
+                    return;
+                }
+
+                const payload: any = {
+                    patient_id: patientId,
+                    doctor_id: doctorId,
+                    diagnosis: values.diagnosis,
+                };
+                if (values.treatment) payload.treatment = values.treatment;
+                if (values.notes) payload.notes = values.notes;
+                if (validPrescriptions.length > 0) payload.prescriptions = validPrescriptions;
+
+                let autoLinked: Appointment | null = null;
+                if (values.appointment_id) {
+                    payload.appointment_id = values.appointment_id;
+                } else {
+                    autoLinked = pickBestAppointment(appointments, medicalRecords);
+                    if (autoLinked) payload.appointment_id = autoLinked._id;
+                }
+
                 await createMedicalRecord(payload);
-                message.success("Tạo hồ sơ y tế thành công!");
+                linkedAppointmentId = payload.appointment_id || "";
+
+                if (autoLinked) {
+                    message.success(
+                        `Tạo hồ sơ y tế thành công! Đã tự động gắn với lịch hẹn ${dayjs(autoLinked.appointment_date).format("DD/MM/YYYY HH:mm")}`
+                    );
+                } else if (!linkedAppointmentId) {
+                    message.warning(
+                        "Đã tạo hồ sơ y tế nhưng chưa gắn lịch hẹn nào. Hồ sơ cần có lịch hẹn mới tạo được hóa đơn."
+                    );
+                } else {
+                    message.success("Tạo hồ sơ y tế thành công!");
+                }
             }
 
-            if (payload.appointment_id) {
+            const linkedAppointment = appointments.find((apt) => apt._id === linkedAppointmentId);
+            if (linkedAppointmentId && linkedAppointment?.status !== "Completed") {
                 try {
-                    await updateAppointment(payload.appointment_id, { status: "Completed" });
+                    await updateAppointment(linkedAppointmentId, { status: "Completed" });
                 } catch (err) {
                     console.error("Không thể cập nhật trạng thái appointment:", err);
                 }
@@ -388,17 +460,18 @@ export default function PatientDetailPage() {
             setMedicalRecords(records);
 
             const allAppointments = await getAppointments();
-            const patientAppointments = allAppointments.filter(
-                (apt: Appointment) => apt.patient_id === patientId
-            );
-            setAppointments(patientAppointments);
+            setAppointments(filterAppointmentsForPatient(allAppointments, patientId));
 
             setIsMedicalRecordModalVisible(false);
             setEditingRecord(null);
             medicalRecordForm.resetFields();
         } catch (error: any) {
             console.error(error);
-            message.error(error.message || "Thao tác thất bại");
+            if (error?.status === 403) {
+                message.error(error.message || "Bạn không có quyền thao tác hồ sơ y tế này");
+            } else {
+                message.error(error?.message || "Thao tác thất bại");
+            }
         } finally {
             setSavingRecord(false);
         }
@@ -419,15 +492,23 @@ export default function PatientDetailPage() {
             diagnosis: record.diagnosis,
             treatment: record.treatment,
             notes: record.notes,
-            prescriptions: record.prescriptions.length > 0
-                ? record.prescriptions.map((p: any) => ({
-                    medicine_id: typeof p.medicine_id === 'object' ? p.medicine_id._id : p.medicine_id,
-                    quantity: p.quantity,
-                    dosage: p.dosage,
-                }))
-                : [{}],
+            // Không có thuốc thì để trống, không chèn dòng rỗng bắt buộc
+            prescriptions: (record.prescriptions || []).map((p: any) => ({
+                medicine_id: toIdString(p.medicine_id),
+                quantity: p.quantity,
+                dosage: p.dosage,
+            })),
         });
         setIsMedicalRecordModalVisible(true);
+    };
+
+    const refreshInvoices = async () => {
+        try {
+            const invoiceList = await getInvoicesByPatientId(patientId!);
+            setInvoices(invoiceList || []);
+        } catch (err) {
+            console.error("Error refreshing invoices:", err);
+        }
     };
 
     const handleCreateInvoice = async (medicalRecordId: string) => {
@@ -435,19 +516,38 @@ export default function PatientDetailPage() {
             setCreatingInvoice(medicalRecordId);
             const invoice = await createInvoiceFromMedicalRecord({ medicalRecordId });
 
-            const invoiceList = await getInvoicesByPatientId(patientId!);
-            setInvoices(invoiceList);
+            await refreshInvoices();
 
             setCreatedInvoice(invoice);
             setInvoiceSuccessModalVisible(true);
         } catch (error: any) {
             console.error(error);
-            if (error.message?.includes("đã tồn tại") || error.message?.includes("already exists")) {
-                message.warning("Hóa đơn đã tồn tại cho lịch hẹn này");
-                const invoiceList = await getInvoicesByPatientId(patientId!);
-                setInvoices(invoiceList);
+            const errMsg: string = error?.message || "Không thể tạo hóa đơn";
+            // invoiceService gắn body lỗi của backend vào error.data
+            const shortages: StockShortage[] = Array.isArray(error?.data?.shortages) ? error.data.shortages : [];
+            if (shortages.length > 0) {
+                Modal.error({
+                    title: "Không đủ thuốc trong kho để tạo hóa đơn",
+                    content: (
+                        <div>
+                            <p>{errMsg}</p>
+                            <ul className="list-disc pl-5 mt-2">
+                                {shortages.map((s, idx) => (
+                                    <li key={idx}>
+                                        {s.name || "Thuốc"}: cần {s.required ?? "?"}, trong kho còn {s.available ?? 0}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    ),
+                });
+            } else if (error?.data?.invoice_id || errMsg.includes("đã tồn tại") || errMsg.includes("already exists")) {
+                message.warning(errMsg);
+                await refreshInvoices();
+            } else if (error?.status === 403) {
+                message.error(errMsg || "Bạn không có quyền tạo hóa đơn");
             } else {
-                message.error(error.message || "Không thể tạo hóa đơn");
+                message.error(errMsg);
             }
         } finally {
             setCreatingInvoice(null);
@@ -455,16 +555,9 @@ export default function PatientDetailPage() {
     };
 
     const getInvoiceForMedicalRecord = (record: MedicalRecord): Invoice | undefined => {
-        if (!record.appointment_id) return undefined;
-        const appointmentId = typeof record.appointment_id === 'object'
-            ? record.appointment_id._id
-            : record.appointment_id;
-        return invoices.find(inv => {
-            const invAppointmentId = typeof inv.appointment_id === 'object'
-                ? inv.appointment_id._id
-                : inv.appointment_id;
-            return invAppointmentId === appointmentId;
-        });
+        const appointmentId = toIdString(record.appointment_id);
+        if (!appointmentId) return undefined;
+        return invoices.find(inv => toIdString(inv.appointment_id) === appointmentId);
     };
 
     const handleDeleteMedicalRecord = async (id: string) => {
@@ -476,8 +569,7 @@ export default function PatientDetailPage() {
             setMedicalRecords(records);
         } catch (error: any) {
             console.error("Error deleting medical record:", error);
-            const errorMessage = error.message || "Xóa thất bại";
-            message.error(errorMessage);
+            message.error(error?.message || "Xóa thất bại");
         } finally {
             setDeletingRecordId(null);
         }
@@ -585,11 +677,13 @@ export default function PatientDetailPage() {
                                         Thêm hồ sơ y tế
                                     </Button>
                                 )}
-                                <Button
-                                    onClick={() => router.push("/dashboard/medical-records/disabled")}
-                                >
-                                    Thùng rác
-                                </Button>
+                                {isAdmin && (
+                                    <Button
+                                        onClick={() => router.push("/dashboard/medical-records/disabled")}
+                                    >
+                                        Thùng rác
+                                    </Button>
+                                )}
                             </Space>
                         }
                     >
@@ -602,10 +696,7 @@ export default function PatientDetailPage() {
                                 {medicalRecords.map((record) => {
                                     const existingInvoice = getInvoiceForMedicalRecord(record);
                                     const hasPrescriptions = record.prescriptions && record.prescriptions.length > 0;
-                                    const appointmentIdValue = typeof record.appointment_id === 'object'
-                                        ? record.appointment_id?._id
-                                        : record.appointment_id;
-                                    const hasAppointment = !!appointmentIdValue && appointmentIdValue !== '';
+                                    const hasAppointment = !!toIdString(record.appointment_id);
                                     const canCreateInvoice = hasPrescriptions && hasAppointment;
 
                                     return (
@@ -615,7 +706,7 @@ export default function PatientDetailPage() {
                                             className="border-l-4 border-green-500"
                                         >
                                             <div className="mb-4 flex justify-end gap-2">
-                                                {record.prescriptions && record.prescriptions.length > 0 && canPrintAndInvoice && (
+                                                {record.prescriptions && record.prescriptions.length > 0 && canPrint && (
                                                     <Button
                                                         type="link"
                                                         icon={<PrinterOutlined />}
@@ -624,7 +715,7 @@ export default function PatientDetailPage() {
                                                         In toa thuốc
                                                     </Button>
                                                 )}
-                                                {canManageMedicalRecords && (
+                                                {canManageMedicalRecords && canEditRecord(record) && (
                                                     <>
                                                         <Button
                                                             type="link"
@@ -652,7 +743,7 @@ export default function PatientDetailPage() {
                                                         </Popconfirm>
                                                     </>
                                                 )}
-                                                {canPrintAndInvoice && (
+                                                {canCreateInvoiceRole && (
                                                     <Button
                                                         type="link"
                                                         icon={<DollarOutlined />}
@@ -689,9 +780,7 @@ export default function PatientDetailPage() {
                                                         : "—"}
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="Bác sĩ">
-                                                    {typeof record.doctor_id === 'object'
-                                                        ? record.doctor_id.fullname
-                                                        : '—'}
+                                                    {getRefName(record.doctor_id)}
                                                 </Descriptions.Item>
                                                 <Descriptions.Item label="Chẩn đoán" span={2}>
                                                     {record.diagnosis}
@@ -917,10 +1006,7 @@ export default function PatientDetailPage() {
                                 style={{ width: "100%" }}
                             >
                                 {appointments
-                                    .filter((apt: Appointment) => {
-                                        const validStatuses = ['Completed', 'Scheduled', 'Confirmed', 'In Progress'];
-                                        return validStatuses.includes(apt.status);
-                                    })
+                                    .filter((apt: Appointment) => LINKABLE_APPOINTMENT_STATUSES.includes(apt.status))
                                     .sort((a: Appointment, b: Appointment) => {
                                         const timeA = new Date(a.appointment_date).getTime();
                                         const timeB = new Date(b.appointment_date).getTime();
@@ -929,12 +1015,7 @@ export default function PatientDetailPage() {
                                     .map((apt: Appointment) => (
                                         (() => {
                                             const hasMedicalRecord = medicalRecords.some(
-                                                (mr: MedicalRecord) => {
-                                                    const mrAppointmentId = typeof mr.appointment_id === 'object'
-                                                        ? mr.appointment_id?._id
-                                                        : mr.appointment_id;
-                                                    return mrAppointmentId === apt._id;
-                                                }
+                                                (mr: MedicalRecord) => toIdString(mr.appointment_id) === apt._id
                                             );
 
                                             return (
@@ -989,7 +1070,8 @@ export default function PatientDetailPage() {
                                 const totalAmount = allPrescriptions.reduce((sum: number, p: any) => {
                                     if (!p?.medicine_id || !p?.quantity) return sum;
                                     const med = medicines.find(m => m._id === p.medicine_id);
-                                    if (!med || !med.price || (med.total_remaining || 0) <= 0) return sum;
+                                    if (!med || !med.price) return sum;
+                                    if ((med.total_remaining || 0) <= 0 && !originalQuantities[med._id]) return sum;
                                     return sum + (p.quantity * med.price);
                                 }, 0);
 
@@ -1062,10 +1144,10 @@ export default function PatientDetailPage() {
                                                                                                     return Promise.reject(new Error("Không được chọn trùng thuốc trong cùng toa"));
                                                                                                 }
 
-                                                                                                // Kiểm tra tồn kho
-                                                                                                const selectedMedicine = medicines.find(m => m._id === currentValue);
-                                                                                                if (selectedMedicine && (selectedMedicine.total_remaining || 0) <= 0) {
-                                                                                                    return Promise.reject(new Error(`Thuốc ${selectedMedicine.name} đã hết hàng`));
+                                                                                                // Kiểm tra tồn kho (bỏ qua thuốc đã kê sẵn trong hồ sơ đang sửa)
+                                                                                                const stockError = getStockError(currentValue);
+                                                                                                if (stockError) {
+                                                                                                    return Promise.reject(new Error(stockError));
                                                                                                 }
 
                                                                                                 return Promise.resolve();
@@ -1083,12 +1165,7 @@ export default function PatientDetailPage() {
                                                                                     filterOption={(input, option) =>
                                                                                         (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
                                                                                     }
-                                                                                    options={medicines
-                                                                                        .filter(med => (med.total_remaining || 0) > 0)
-                                                                                        .map((med) => ({
-                                                                                            value: med._id,
-                                                                                            label: `${med.name} (${med.unit}) - Còn ${med.total_remaining || 0}`,
-                                                                                        }))}
+                                                                                    options={medicineOptions}
                                                                                 />
                                                                             </Form.Item>
                                                                         </Col>
@@ -1122,11 +1199,9 @@ export default function PatientDetailPage() {
                                                                                             const medicineId = getFieldValue(['prescriptions', field.name, 'medicine_id']);
                                                                                             if (!medicineId) return Promise.resolve();
 
-                                                                                            const selectedMedicine = medicines.find(m => m._id === medicineId);
-                                                                                            const stockQuantity = selectedMedicine?.total_remaining || 0;
-
-                                                                                            if (value > stockQuantity) {
-                                                                                                return Promise.reject(new Error(`Không đủ hàng trong kho. Chỉ còn ${stockQuantity} ${selectedMedicine?.unit || 'đơn vị'}`));
+                                                                                            const stockError = getStockError(String(medicineId), Number(value));
+                                                                                            if (stockError) {
+                                                                                                return Promise.reject(new Error(stockError));
                                                                                             }
 
                                                                                             return Promise.resolve();

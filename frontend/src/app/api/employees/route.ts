@@ -4,14 +4,27 @@ import { getAuthHeaderServer } from "@/lib/authHeaderServer";
 
 const API_URL = `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/employees`;
 
-async function safeJsonParse(res: Response) {
+// Đọc body đúng một lần (tránh lỗi "Body is unusable")
+async function readBody(res: Response): Promise<{ data: any; text: string }> {
   const text = await res.text();
   try {
-    return JSON.parse(text);
-  } catch (err) {
-    console.error(" Response không phải JSON:", text);
-    throw new Error(`Response từ backend không hợp lệ: ${res.url}`);
+    return { data: text ? JSON.parse(text) : null, text };
+  } catch {
+    return { data: null, text };
   }
+}
+
+// Giữ nguyên status và thông điệp lỗi của backend
+function backendError(status: number, data: any, text: string, fallback: string) {
+  const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  return NextResponse.json(
+    {
+      ...body,
+      error: body.error || body.message || fallback,
+      ...(data === null && text ? { detail: text.slice(0, 500) } : {}),
+    },
+    { status }
+  );
 }
 
 export async function GET(req: NextRequest) {
@@ -36,13 +49,12 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     });
 
+    const { data, text } = await readBody(res);
     if (!res.ok) {
-      const text = await res.text();
-      console.error("Backend GET error:", text);
-      return NextResponse.json({ error: text }, { status: res.status });
+      console.error("Backend GET error:", res.status, text);
+      return backendError(res.status, data, text, "Không thể lấy danh sách nhân viên");
     }
 
-    const data = await safeJsonParse(res);
     let list = Array.isArray(data) ? data : [];
 
     if (disabled === "true") {
@@ -76,14 +88,13 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
 
+    const { data, text } = await readBody(res);
     if (!res.ok) {
-      const text = await res.text();
-      console.error(" Backend POST error:", text);
-      return NextResponse.json({ error: text }, { status: res.status });
+      console.error(" Backend POST error:", res.status, text);
+      return backendError(res.status, data, text, "Không thể tạo nhân viên");
     }
 
-    const data = await safeJsonParse(res);
-    return NextResponse.json(data, { status: 200 });
+    return NextResponse.json(data ?? {}, { status: 200 });
   } catch (error: any) {
     console.error("POST /api/employees error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });

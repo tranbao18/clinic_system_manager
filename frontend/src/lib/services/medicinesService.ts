@@ -1,4 +1,4 @@
-import { getAuthHeaderClient } from "@/lib/authHeaderClient";
+import { getAuthHeaderClient, handleAuthRedirect } from "@/lib/authHeaderClient";
 export interface Medicine {
     _id: string;
     name: string;
@@ -8,6 +8,7 @@ export interface Medicine {
     total_remaining?: number; // Tổng số lượng còn lại từ medicine-imports
     created_at: string;
     updated_at: string;
+    disabled?: boolean;
 }
 
 export interface CreateMedicineData {
@@ -42,22 +43,34 @@ export const MEDICINE_CATEGORIES = [
     "Khác",
 ] as const;
 
-export async function getMedicines(): Promise<Medicine[]> {
+// Đọc body một lần; lỗi thì ném Error kèm thông báo backend; 401 chuyển về trang đăng nhập
+async function parseResponse<T>(res: Response, fallback: string): Promise<T> {
+    const text = await res.text();
+    let data: unknown = null;
     try {
-        const res = await fetch("/api/medicines", {
-            cache: "no-store",
-            headers: getAuthHeaderClient()
-        });
-        if (!res.ok) {
-            throw new Error(`Failed to fetch medicines: ${res.status}`);
-        }
-        const data = await res.json();
-        return Array.isArray(data) ? data : [];
-    } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error("❌ getMedicines errors:", errorMessage);
-        return [];
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = null;
     }
+    if (!res.ok) {
+        if (res.status === 401) handleAuthRedirect();
+        const body = (data && typeof data === "object" ? data : {}) as { error?: unknown; message?: unknown };
+        const msg =
+            (typeof body.error === "string" && body.error) ||
+            (typeof body.message === "string" && body.message) ||
+            fallback;
+        throw Object.assign(new Error(msg), { status: res.status, data });
+    }
+    return data as T;
+}
+
+export async function getMedicines(): Promise<Medicine[]> {
+    const res = await fetch("/api/medicines", {
+        cache: "no-store",
+        headers: getAuthHeaderClient()
+    });
+    const data = await parseResponse<unknown>(res, "Không thể tải danh sách thuốc");
+    return Array.isArray(data) ? data : [];
 }
 
 export async function getMedicineById(id: string): Promise<Medicine> {
@@ -65,8 +78,7 @@ export async function getMedicineById(id: string): Promise<Medicine> {
         cache: "no-store",
         headers: getAuthHeaderClient()
     });
-    if (!res.ok) throw new Error("Không thể lấy thông tin thuốc");
-    return res.json();
+    return parseResponse<Medicine>(res, "Không thể lấy thông tin thuốc");
 }
 
 export async function createMedicine(data: CreateMedicineData): Promise<Medicine> {
@@ -78,11 +90,7 @@ export async function createMedicine(data: CreateMedicineData): Promise<Medicine
         },
         body: JSON.stringify(data),
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể tạo thuốc" }));
-        throw new Error(error.error || "Không thể tạo thuốc");
-    }
-    return res.json();
+    return parseResponse<Medicine>(res, "Không thể tạo thuốc");
 }
 
 export async function updateMedicine(
@@ -97,11 +105,7 @@ export async function updateMedicine(
         },
         body: JSON.stringify(data),
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể cập nhật thuốc" }));
-        throw new Error(error.error || "Không thể cập nhật thuốc");
-    }
-    return res.json();
+    return parseResponse<Medicine>(res, "Không thể cập nhật thuốc");
 }
 
 export async function deleteMedicine(id: string): Promise<void> {
@@ -109,10 +113,7 @@ export async function deleteMedicine(id: string): Promise<void> {
         method: "DELETE",
         headers: getAuthHeaderClient()
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể xóa thuốc" }));
-        throw new Error(error.error || "Không thể xóa thuốc");
-    }
+    await parseResponse<unknown>(res, "Không thể xóa thuốc");
 }
 
 export async function getDisabledMedicines(): Promise<Medicine[]> {
@@ -120,45 +121,35 @@ export async function getDisabledMedicines(): Promise<Medicine[]> {
         cache: "no-store",
         headers: getAuthHeaderClient()
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể lấy danh sách thuốc đã xóa" }));
-        throw new Error(error.error || "Không thể lấy danh sách thuốc đã xóa");
-    }
-    return res.json();
+    const data = await parseResponse<unknown>(res, "Không thể lấy danh sách thuốc đã xóa");
+    // Chỉ giữ thuốc đã xóa để thao tác "Xóa vĩnh viễn" không bao giờ áp dụng cho thuốc đang dùng
+    return (Array.isArray(data) ? (data as Medicine[]) : []).filter((m) => m.disabled === true);
 }
 
-export async function restoreMedicine(id: string): Promise<Medicine> {
+export async function restoreMedicine(id: string): Promise<void> {
     const res = await fetch(`/api/medicines/${id}/restore`, {
         method: "PUT",
-        headers: {
-            "Content-Type": "application/json",
-            ...getAuthHeaderClient()
-        },
+        headers: getAuthHeaderClient(),
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể khôi phục thuốc" }));
-        throw new Error(error.error || "Không thể khôi phục thuốc");
-    }
-    return res.json();
+    await parseResponse<unknown>(res, "Không thể khôi phục thuốc");
 }
 
 export async function hardDeleteMedicine(id: string): Promise<void> {
-    const res = await fetch(`/api/medicines/${id}?hard=true`, { method: "DELETE" });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể xóa vĩnh viễn thuốc" }));
-        throw new Error(error.error || "Không thể xóa vĩnh viễn thuốc");
-    }
+    const res = await fetch(`/api/medicines/${id}?hard=true`, {
+        method: "DELETE",
+        headers: getAuthHeaderClient(),
+    });
+    await parseResponse<unknown>(res, "Không thể xóa vĩnh viễn thuốc");
 }
 
 export async function hardDeleteMedicines(ids: string[]): Promise<void> {
     const res = await fetch(`/api/medicines/bulk-delete?hard=true`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaderClient(),
+        },
         body: JSON.stringify({ ids }),
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể xóa vĩnh viễn các thuốc" }));
-        throw new Error(error.error || "Không thể xóa vĩnh viễn các thuốc");
-    }
+    await parseResponse<unknown>(res, "Không thể xóa vĩnh viễn các thuốc");
 }
-

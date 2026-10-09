@@ -48,8 +48,6 @@ function createTransporter() {
     connectionTimeout: 10000, // 10 seconds
     greetingTimeout: 10000,
     socketTimeout: 10000,
-    // Thêm tls options để tránh lỗi certificate
-    tls: { rejectUnauthorized: false },
   });
 }
 //

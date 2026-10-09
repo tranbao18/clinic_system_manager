@@ -7,9 +7,11 @@ export async function POST(req: Request) {
     const body = await req.json();
     // Backend yêu cầu token Admin cho /register
     const authHeaders = await getAuthHeaderServer();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (authHeaders.Authorization) headers.Authorization = authHeaders.Authorization;
     const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
+      headers,
       body: JSON.stringify(body),
     });
 

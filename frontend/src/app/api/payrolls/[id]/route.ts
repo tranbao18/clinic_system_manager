@@ -1,85 +1,33 @@
 // KẾ THỪA
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthHeaderServer } from "@/lib/authHeaderServer";
+import { NextRequest } from "next/server";
+import { proxyToBackend, proxyWithJsonBody } from "@/lib/backendProxy";
 
-const API_URL = `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/payrolls`;
+type Params = { params: Promise<{ id: string }> };
 
-export async function GET(
-    req: NextRequest,
-    { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_req: NextRequest, { params }: Params) {
     const { id } = await params;
-    const authHeaders = await getAuthHeaderServer();
-    const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-    };
-
-    if (authHeaders.Authorization) {
-        headers.Authorization = authHeaders.Authorization;
-    }
-
-    const response = await fetch(`${API_URL}/${id}`, {
-        headers,
-        cache: "no-store",
+    return proxyToBackend({
+        path: `/api/payrolls/${encodeURIComponent(id)}`,
+        errorMessage: "Không thể tải bảng lương",
     });
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
 }
 
-export async function PUT(
-    req: NextRequest,
-    { params }: { params: Promise<{ id: string }> }
-) {
+export async function PUT(req: NextRequest, { params }: Params) {
     const { id } = await params;
-    const body = await req.json();
-    const authHeaders = await getAuthHeaderServer();
-    const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-    };
-
-    if (authHeaders.Authorization) {
-        headers.Authorization = authHeaders.Authorization;
-    }
-
-    const { searchParams } = new URL(req.url);
-    const sendEmail = searchParams.get("sendEmail");
-
-    let url = `${API_URL}/${id}`;
-    if (sendEmail === "false") {
-        url += "?sendEmail=false";
-    }
-
-    const response = await fetch(url, {
+    const sendEmail = new URL(req.url).searchParams.get("sendEmail");
+    return proxyWithJsonBody(req, {
+        path: `/api/payrolls/${encodeURIComponent(id)}`,
         method: "PUT",
-        headers,
-        body: JSON.stringify(body),
+        search: sendEmail === "false" ? "?sendEmail=false" : "",
+        errorMessage: "Không thể cập nhật bảng lương",
     });
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
 }
 
-export async function DELETE(
-    req: NextRequest,
-    { params }: { params: Promise<{ id: string }> }
-) {
+export async function DELETE(_req: NextRequest, { params }: Params) {
     const { id } = await params;
-    const authHeaders = await getAuthHeaderServer();
-    const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-    };
-
-    if (authHeaders.Authorization) {
-        headers.Authorization = authHeaders.Authorization;
-    }
-
-    const response = await fetch(`${API_URL}/${id}`, {
+    return proxyToBackend({
+        path: `/api/payrolls/${encodeURIComponent(id)}`,
         method: "DELETE",
-        headers,
+        errorMessage: "Không thể xóa bảng lương",
     });
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
 }
-

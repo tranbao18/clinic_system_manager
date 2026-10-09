@@ -21,30 +21,30 @@ export async function PUT(
       headers.Authorization = authHeaders.Authorization;
     }
 
-    const url = `${API_URL}/api/notifications/${id}/read`;
+    const url = `${API_URL}/api/notifications/${encodeURIComponent(id)}/read`;
     const res = await fetch(url, {
       method: "PUT",
       headers,
     });
 
-    if (!res.ok) {
-      let errorDetail = "";
-      try {
-        const errorData = await res.json();
-        errorDetail = errorData.error || errorData.message || JSON.stringify(errorData);
-      } catch {
-        const text = await res.text();
-        errorDetail = text || `HTTP ${res.status} ${res.statusText}`;
-      }
+    // Đọc body đúng một lần (json() rồi text() sẽ lỗi "Body is unusable")
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
 
+    if (!res.ok) {
+      const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
       return NextResponse.json(
-        { error: "Không thể đánh dấu đã đọc", detail: errorDetail },
+        { ...body, error: body.error || body.message || "Không thể đánh dấu đã đọc" },
         { status: res.status }
       );
     }
 
-    const data = await res.json();
-    return NextResponse.json(data);
+    return NextResponse.json(data ?? {});
   } catch (err: any) {
     console.error("PUT /api/notifications/[id]/read exception:", err);
     return NextResponse.json(

@@ -4,6 +4,7 @@ import dao from '../dao/user.dao.js';
 import UserService from '../services/user.service.js';
 import pickFields from '../utils/pick-fields.js';
 
+import errorStatus from '../utils/error-status.js';
 // Không bao giờ trả password_hash về client
 const stripHash = (doc) => {
   if (!doc) return doc;
@@ -26,7 +27,7 @@ class UserController {
       });
       res.status(201).json(stripHash(result));
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -35,7 +36,7 @@ class UserController {
       const result = await dao.model.find({ disabled: false }).select('-password_hash');
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -45,7 +46,7 @@ class UserController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -56,7 +57,7 @@ class UserController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(stripHash(result));
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -65,7 +66,7 @@ class UserController {
       await UserService.deleteCascade(req.params.id);
       res.json({ message: 'Deleted with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -74,7 +75,7 @@ class UserController {
       await UserService.restoreCascade(req.params.id);
       res.json({ message: 'Restored with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

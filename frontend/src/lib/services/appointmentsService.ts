@@ -1,12 +1,15 @@
 import { getSafeAuthHeaders } from "@/lib/authHeaderClient";
 
+type PopulatedRef = { _id: string; fullname?: string; position?: string };
+
 export interface Appointment {
     _id: string;
-    patient_id: string;
-    doctor_id: string;
+    patient_id: string | PopulatedRef;
+    doctor_id: string | PopulatedRef | null;
     appointment_date: string; // ISO string
     status: string;
     reason: string;
+    disabled?: boolean;
     created_at: string;
     updated_at: string;
 }
@@ -28,11 +31,52 @@ export interface UpdateAppointmentData {
     reason?: string;
 }
 
-export async function getAppointments(): Promise<Appointment[]> {
+/**
+ * Lấy id dạng chuỗi từ giá trị có thể là id thuần hoặc document đã populate (hoặc null).
+ */
+export function toIdString(value: unknown): string {
+    if (value === undefined || value === null) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "object") {
+        const id = (value as { _id?: unknown })._id;
+        if (id !== undefined && id !== null) return String(id);
+        return "";
+    }
+    return String(value);
+}
+
+// Đọc body lỗi một lần, ưu tiên thông điệp từ backend
+async function buildError(res: Response, fallback: string): Promise<Error> {
+    let text = "";
+    try {
+        text = await res.text();
+    } catch {
+        // ignore
+    }
+    let message = fallback;
+    if (text) {
+        try {
+            const body = JSON.parse(text);
+            if (body && typeof body === "object") {
+                message = body.error || body.message || fallback;
+            }
+        } catch {
+            // body không phải JSON, giữ thông điệp mặc định
+        }
+    }
+    const err = new Error(message);
+    (err as any).status = res.status;
+    return err;
+}
+
+export async function getAppointments(
+    options: { includeDisabled?: boolean } = {}
+): Promise<Appointment[]> {
     try {
         const headers = getSafeAuthHeaders() as Record<string, string>;
+        const url = options.includeDisabled ? "/api/appointments" : "/api/appointments?disabled=false";
 
-        const res = await fetch("/api/appointments", {
+        const res = await fetch(url, {
             cache: "no-store",
             headers
         });
@@ -59,7 +103,7 @@ export async function getAppointmentById(id: string): Promise<Appointment> {
         cache: "no-store",
         headers: getSafeAuthHeaders()
     });
-    if (!res.ok) throw new Error("Không thể lấy thông tin lịch hẹn");
+    if (!res.ok) throw await buildError(res, "Không thể lấy thông tin lịch hẹn");
     return res.json();
 }
 
@@ -72,10 +116,7 @@ export async function createAppointment(data: CreateAppointmentData): Promise<Ap
         },
         body: JSON.stringify(data),
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể tạo lịch hẹn" }));
-        throw new Error(error.error || "Không thể tạo lịch hẹn");
-    }
+    if (!res.ok) throw await buildError(res, "Không thể tạo lịch hẹn");
     return res.json();
 }
 
@@ -92,48 +133,22 @@ export async function updateAppointment(
         },
         body: JSON.stringify(data),
     });
-    if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Không thể cập nhật lịch hẹn" }));
-        throw new Error(error.error || "Không thể cập nhật lịch hẹn");
-    }
+    if (!res.ok) throw await buildError(res, "Không thể cập nhật lịch hẹn");
     return res.json();
 }
 
-export async function deleteAppointment(id: string): Promise<void> {
-    const url = `/api/appointments/${id}?hard=true`;
-    const headers = getSafeAuthHeaders();
-
-    console.log("🔄 [DELETE APPOINTMENT] Starting deletion");
-    console.log("🔄 [DELETE APPOINTMENT] URL:", url);
+// Mặc định xóa mềm; chỉ Admin mới được xóa vĩnh viễn (hard)
+export async function deleteAppointment(id: string, options: { hard?: boolean } = {}): Promise<void> {
+    const url = `/api/appointments/${id}` + (options.hard ? "?hard=true" : "");
 
     const res = await fetch(url, {
         method: "DELETE",
-        headers
+        headers: getSafeAuthHeaders()
     });
 
-    console.log("🔄 [DELETE APPOINTMENT] Response status:", res.status);
-
     if (!res.ok) {
-        let errorBody = "";
-        try {
-            errorBody = await res.text();
-            console.error("❌ [DELETE APPOINTMENT] Response body:", errorBody);
-        } catch (e) {
-            console.error("❌ [DELETE APPOINTMENT] Could not read response body");
-        }
-
-        const error = { error: "Không thể xóa lịch hẹn" };
-        try {
-            const parsed = JSON.parse(errorBody);
-            error.error = parsed.error || errorBody;
-        } catch (e) {
-            error.error = errorBody || error.error;
-        }
-
-        console.error("❌ [DELETE APPOINTMENT] Final error:", error.error);
-        throw new Error(error.error);
+        const err = await buildError(res, "Không thể xóa lịch hẹn");
+        console.error("❌ [DELETE APPOINTMENT] failed:", res.status, err.message);
+        throw err;
     }
-
-    console.log("✅ [DELETE APPOINTMENT] Successfully deleted appointment:", id);
 }
-

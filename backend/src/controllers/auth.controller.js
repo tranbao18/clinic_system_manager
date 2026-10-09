@@ -5,7 +5,9 @@ import EmployeeDAO from '../dao/employee.dao.js';
 import PatientDAO from '../dao/patient.dao.js';
 
 import pickFields from '../utils/pick-fields.js';
+import { normalizeEmail } from '../models/employee.model.js';
 
+import errorStatus from '../utils/error-status.js';
 const STAFF_ROLES = ['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist'];
 const EMPLOYEE_FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'position', 'specialization', 'basic_salary'];
 const PATIENT_FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'medical_history'];
@@ -25,7 +27,12 @@ class AuthController {
         return res.status(400).json({ error: 'Thiếu thông tin nhân viên' });
       }
 
-      const createdEmployee = await EmployeeDAO.createEmployee(pickFields(employee, EMPLOYEE_FIELDS));
+      // Email bỏ trống -> không lưu "" (index unique chỉ bỏ qua nhân viên KHÔNG có email)
+      const employeeData = pickFields(employee, EMPLOYEE_FIELDS);
+      employeeData.email = normalizeEmail(employeeData.email);
+      if (employeeData.email === undefined) delete employeeData.email;
+
+      const createdEmployee = await EmployeeDAO.createEmployee(employeeData);
 
       const createdUser = await UserDAO.register(role, createdEmployee);
 
@@ -38,7 +45,7 @@ class AuthController {
       if (err.message && err.message.includes('đã được sử dụng')) {
         return res.status(400).json({ error: err.message });
       }
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -56,7 +63,7 @@ class AuthController {
       return res.status(200).json({ user: result.user, token: result.token, employee: employeeObj });
     } catch (err) {
       console.error('AuthController.login error:', err.message);
-      return res.status(err.status || 500).json({ error: err.message, message: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message, message: err.message });
     }
   };
 
@@ -71,7 +78,7 @@ class AuthController {
       return res.status(200).json(result);
     } catch (err) {
       console.error('AuthController.logout error:', err);
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -137,7 +144,7 @@ class AuthController {
       return res.status(200).json({ user: userObj, employee: employeeObj });
     } catch (err) {
       console.error('AuthController.login error:', err);
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -157,7 +164,7 @@ class AuthController {
       return res.status(200).json({ user: userObj, employee: employeeObj });
     } catch (err) {
       console.error('AuthController.login error:', err);
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -199,7 +206,7 @@ class AuthController {
 
     } catch (err) {
       console.error('updateAccount error:', err);
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
   //
@@ -209,7 +216,7 @@ class AuthController {
       const result = await UserDAO.resetPassword(req.params.id);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -240,7 +247,7 @@ class AuthController {
       });
 
     } catch (err) {
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -257,7 +264,7 @@ class AuthController {
       return res.status(200).json({ user: result.user, token: result.token, patient: patientObj });
     } catch (err) {
       console.error('AuthController.loginPatient error:', err.message);
-      return res.status(err.status || 500).json({ error: err.message, message: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message, message: err.message });
     }
   };
 
@@ -271,7 +278,7 @@ class AuthController {
       });
     } catch (err) {
       console.error('AuthController.validateToken error:', err);
-      return res.status(500).json({ error: err.message });
+      return res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 }

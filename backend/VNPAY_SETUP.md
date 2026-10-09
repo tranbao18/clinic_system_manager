@@ -17,7 +17,7 @@ Thêm các biến sau vào file `.env` của backend:
 VNPAY_TMN_CODE=your_tmn_code_here
 VNPAY_HASH_SECRET=your_hash_secret_here
 VNPAY_PAYMENT_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
-VNPAY_RETURN_URL=http://localhost:3000/dashboard/invoices/[invoice_id]?payment=success
+VNPAY_RETURN_URL=http://localhost:5050/api/payments/vnpay-return
 VNPAY_IPN_URL=http://localhost:5050/api/payments/vnpay-ipn
 
 # Frontend URL (để redirect sau khi thanh toán)
@@ -25,8 +25,8 @@ FRONTEND_URL=http://localhost:3000
 ```
 
 **Lưu ý:**
-- `VNPAY_RETURN_URL`: URL mà VNPay sẽ redirect về sau khi thanh toán
-- `VNPAY_IPN_URL`: URL webhook mà VNPay sẽ gọi để thông báo kết quả thanh toán
+- `VNPAY_RETURN_URL`: trỏ về **backend** (`/api/payments/vnpay-return`). Backend chỉ kiểm tra chữ ký rồi chuyển trình duyệt về `FRONTEND_URL/dashboard/invoices/<id>?payment=success|failed` — bước này **không** ghi nhận thanh toán.
+- `VNPAY_IPN_URL`: URL webhook VNPay gọi để báo kết quả. **Chỉ IPN mới ghi nhận thanh toán** (kiểm tra chữ ký, số tiền, chống ghi trùng theo `vnp_TxnRef`). Phải đăng ký URL này với VNPay.
 - Trong production, thay `localhost` bằng domain thực tế
 
 ## 3. Test VNPay
@@ -67,7 +67,7 @@ Trong môi trường sandbox, bạn có thể test với:
 ## 5. Lưu ý quan trọng
 
 1. **IPN URL**: Phải là URL public (không thể dùng localhost trong production)
-2. **Return URL**: Có thể dùng localhost để test
+2. **Return URL**: Có thể dùng localhost để test; trang hóa đơn có thể hiện "thành công" trước khi IPN tới — hệ thống tự tải lại sau vài giây
 3. **Hash Secret**: Giữ bí mật, không commit vào git
 4. **Amount**: VNPay yêu cầu amount tính bằng xu (x100), code đã tự động xử lý
 

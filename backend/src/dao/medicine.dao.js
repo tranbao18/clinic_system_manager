@@ -32,7 +32,7 @@ class MedicineDAO extends BaseDAO {
 
   async hardDeleteMany(ids = []) {
     if (!Array.isArray(ids) || ids.length === 0) return null;
-    return await MedicineService.harDeleteManyCascade(ids);
+    return await MedicineService.hardDeleteManyCascade(ids);
   }
 }
 

@@ -46,6 +46,20 @@ app.use("/api/reports", reportRoutes);
 app.use("/api/notifications", notificationRoutes);
 
 app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err)
+
+  // Lỗi do request của client (body JSON sai cú pháp, quá lớn...) -> trả đúng mã 4xx thay vì 500
+  if (err?.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'JSON không hợp lệ' })
+  }
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Dữ liệu gửi lên quá lớn' })
+  }
+  const status = Number(err?.status ?? err?.statusCode)
+  if (Number.isInteger(status) && status >= 400 && status < 500) {
+    return res.status(status).json({ error: err.message })
+  }
+
   console.error('Unhandled:', err)
   res.status(500).json({ error: 'Internal server error' })
 })

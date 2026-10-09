@@ -1,3 +1,5 @@
+import { getAuthHeaderClient, handleAuthRedirect } from "@/lib/authHeaderClient";
+
 export interface Invoice {
   _id: string;
   patient_id:
@@ -30,293 +32,165 @@ export interface CreateInvoiceData {
 export interface CreateInvoiceFromMedicalRecordData {
   medicalRecordId: string;
 }
-import { getAuthHeaderClient } from "@/lib/authHeaderClient";
+
+export interface ApiError extends Error {
+  status?: number;
+  data?: unknown;
+}
+
+// Đọc body một lần; lỗi thì ném Error kèm thông báo backend (+ status, data); 401 chuyển về trang đăng nhập
+async function parseResponse<T>(res: Response, fallback: string): Promise<T> {
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    if (res.status === 401) handleAuthRedirect();
+    const body = (data && typeof data === "object" ? data : {}) as { error?: unknown; message?: unknown };
+    const msg =
+      (typeof body.error === "string" && body.error) ||
+      (typeof body.message === "string" && body.message) ||
+      fallback;
+    const err: ApiError = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data as T;
+}
+
+function idOf(ref: Invoice["patient_id"] | Invoice["appointment_id"] | null | undefined): string | undefined {
+  if (!ref) return undefined;
+  return typeof ref === "object" ? ref._id : ref;
+}
 
 export async function getInvoices(filters?: {
   patient_id?: string;
   appointment_id?: string;
   status?: string;
 }): Promise<Invoice[]> {
-  try {
-    const authHeaders = await getAuthHeaderClient();
-    const res = await fetch("/api/invoices", {
-      cache: "no-store",
-      headers: authHeaders
-    });
+  const res = await fetch("/api/invoices", {
+    cache: "no-store",
+    headers: getAuthHeaderClient(),
+  });
+  const data = await parseResponse<unknown>(res, "Không thể lấy danh sách hóa đơn");
+  let invoices: Invoice[] = Array.isArray(data) ? data : [];
 
-    if (!res.ok) {
-      let errorMessage = "Không thể lấy danh sách hóa đơn";
-      try {
-        const errorData = await res.json();
-        errorMessage = errorData.error || errorData.detail || errorMessage;
-        console.error("getInvoices API error:", {
-          status: res.status,
-          statusText: res.statusText,
-          error: errorData,
-        });
-      } catch (e) {
-        const errorText = await res.text();
-        console.error("getInvoices API error (text):", {
-          status: res.status,
-          statusText: res.statusText,
-          error: errorText,
-        });
-        errorMessage = errorText || errorMessage;
-      }
-      console.warn("⚠️ Không thể lấy danh sách hóa đơn, trả về mảng rỗng");
-      return [];
-    }
-
-    let invoices = await res.json();
-
-    if (!Array.isArray(invoices)) {
-      console.warn("⚠️ Response không phải array, trả về mảng rỗng");
-      return [];
-    }
-
-    if (filters) {
-      if (filters.patient_id) {
-        invoices = invoices.filter((inv: Invoice) => {
-          const pid =
-            typeof inv.patient_id === "object"
-              ? inv.patient_id._id
-              : inv.patient_id;
-          return pid === filters.patient_id;
-        });
-      }
-      if (filters.appointment_id) {
-        invoices = invoices.filter((inv: Invoice) => {
-          const aid =
-            typeof inv.appointment_id === "object"
-              ? inv.appointment_id._id
-              : inv.appointment_id;
-          return aid === filters.appointment_id;
-        });
-      }
-      if (filters.status) {
-        invoices = invoices.filter(
-          (inv: Invoice) => inv.status?.trim() === filters.status
-        );
-      }
-    }
-
-    return invoices;
-  } catch (error: any) {
-    console.error("getInvoices exception:", error);
-    return [];
+  if (filters?.patient_id) {
+    invoices = invoices.filter((inv) => idOf(inv.patient_id) === filters.patient_id);
   }
+  if (filters?.appointment_id) {
+    invoices = invoices.filter((inv) => idOf(inv.appointment_id) === filters.appointment_id);
+  }
+  if (filters?.status) {
+    invoices = invoices.filter((inv) => inv.status?.trim() === filters.status);
+  }
+  return invoices;
 }
 
 export async function getInvoiceById(id: string): Promise<Invoice> {
-  try {
-    console.log(`🔍 [getInvoiceById] Calling for invoice: ${id}`);
-    const authHeaders = await getAuthHeaderClient();
-    console.log(`🔑 [getInvoiceById] Auth headers:`, Object.keys(authHeaders));
-
-    const res = await fetch(`/api/invoices/${id}`, {
-      cache: "no-store",
-      headers: authHeaders
-    });
-
-    console.log(`📊 [getInvoiceById] Next.js response status: ${res.status}`);
-
-    if (!res.ok) {
-      let detail = "";
-      try {
-        const errorData = await res.json();
-        detail = errorData.error || errorData.detail || JSON.stringify(errorData);
-        console.log(`❌ [getInvoiceById] Next.js error:`, detail);
-      } catch (e) {
-        detail = await res.text();
-        console.log(`❌ [getInvoiceById] Next.js error text:`, detail);
-      }
-      throw new Error(detail || "Không thể lấy thông tin hóa đơn");
-    }
-
-    const data = await res.json();
-    console.log(`✅ [getInvoiceById] Success, data keys:`, Object.keys(data));
-    return data;
-  } catch (err: any) {
-    console.error("getInvoiceById error:", err);
-    throw err;
-  }
+  const res = await fetch(`/api/invoices/${id}`, {
+    cache: "no-store",
+    headers: getAuthHeaderClient(),
+  });
+  return parseResponse<Invoice>(res, "Không thể lấy thông tin hóa đơn");
 }
 
 export async function getInvoicesByPatientId(
   patientId: string
 ): Promise<Invoice[]> {
-  try {
-    const authHeaders = await getAuthHeaderClient();
-    const res = await fetch(`/api/invoices/patient/${patientId}`, {
-      cache: "no-store",
-      headers: authHeaders
-    });
-
-    if (!res.ok) {
-      console.warn("getInvoicesByPatientId: Không thể lấy hóa đơn, trả về mảng rỗng");
-      return [];
-    }
-
-    const data = await res.json();
-    return Array.isArray(data) ? data : (data ? [data] : []);
-  } catch (error: any) {
-    console.error("getInvoicesByPatientId error:", error);
-    return [];
-  }
+  const res = await fetch(`/api/invoices/patient/${patientId}`, {
+    cache: "no-store",
+    headers: getAuthHeaderClient(),
+  });
+  // 404 = bệnh nhân chưa có hóa đơn; các lỗi khác (401/403/500) được ném ra để trang hiển thị
+  if (res.status === 404) return [];
+  const data = await parseResponse<unknown>(res, "Không thể lấy hóa đơn của bệnh nhân");
+  return Array.isArray(data) ? data : data ? [data as Invoice] : [];
 }
 
 export async function getInvoiceByAppointmentId(
   appointmentId: string
 ): Promise<Invoice[]> {
-  try {
-    return await getInvoices({ appointment_id: appointmentId });
-  } catch (error: any) {
-    console.error("getInvoiceByAppointmentId error:", error);
-    return [];
-  }
+  return getInvoices({ appointment_id: appointmentId });
 }
 
 export async function createInvoice(data: CreateInvoiceData): Promise<Invoice> {
-  const authHeaders = await getAuthHeaderClient();
   const res = await fetch("/api/invoices", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders
+      ...getAuthHeaderClient(),
     },
     body: JSON.stringify(data),
   });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || "Không thể tạo hóa đơn");
-  }
-  return res.json();
+  return parseResponse<Invoice>(res, "Không thể tạo hóa đơn");
 }
 
+// Lỗi 400 có thể kèm err.data.shortages (thiếu thuốc) hoặc err.data.invoice_id (đã có hóa đơn)
 export async function createInvoiceFromMedicalRecord(
   data: CreateInvoiceFromMedicalRecordData
 ): Promise<Invoice> {
-  try {
-    // Include client-side Authorization header (if token stored in localStorage/sessionStorage)
-    const clientHeaders: Record<string, string> = { "Content-Type": "application/json" };
-    try {
-      const authHdr = getAuthHeaderClient();
-      if (authHdr && (authHdr as any).Authorization) {
-        clientHeaders.Authorization = (authHdr as any).Authorization;
-      }
-    } catch {
-      // ignore if window not available or other errors
-    }
-
-    const res = await fetch(`/api/invoices/from-medical-record/${data.medicalRecordId}`, {
-      method: "POST",
-      headers: clientHeaders,
-    });
-
-    if (!res.ok) {
-      // Try to parse JSON error body, but fall back to plain text if parsing fails.
-      let errorDetail = "";
-      try {
-        const errorData = await res.json();
-        errorDetail = errorData.error || errorData.detail || JSON.stringify(errorData);
-      } catch (parseErr) {
-        // If JSON parsing fails, try to read as text
-        try {
-          const text = await res.text();
-          errorDetail = text || `HTTP ${res.status} ${res.statusText}`;
-        } catch {
-          errorDetail = `HTTP ${res.status} ${res.statusText}`;
-        }
-      }
-
-      const err = new Error(errorDetail || "Không thể tạo hóa đơn từ hồ sơ y tế");
-      // attach status for downstream handlers if needed
-      (err as any).status = res.status;
-      throw err;
-    }
-
-    return await res.json();
-  } catch (err: any) {
-    console.error("createInvoiceFromMedicalRecord error:", err);
-    throw err;
-  }
+  const res = await fetch(`/api/invoices/from-medical-record/${data.medicalRecordId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaderClient(),
+    },
+  });
+  return parseResponse<Invoice>(res, "Không thể tạo hóa đơn từ hồ sơ y tế");
 }
 
 export async function updateInvoice(
   id: string,
   data: Partial<CreateInvoiceData>
 ): Promise<Invoice> {
-  const authHeaders = await getAuthHeaderClient();
   const res = await fetch(`/api/invoices/${id}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders
+      ...getAuthHeaderClient(),
     },
     body: JSON.stringify(data),
   });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || "Không thể cập nhật hóa đơn");
-  }
-  return res.json();
+  return parseResponse<Invoice>(res, "Không thể cập nhật hóa đơn");
 }
 
+// Backend luôn tự tính trạng thái từ các khoản thanh toán; chỉ cần gửi PUT rỗng và dùng kết quả trả về
 export async function updateInvoiceStatus(id: string): Promise<Invoice> {
-  const invoice = await getInvoiceById(id);
-  const { getPaymentsByInvoiceId } = await import("./paymentService");
-  const payments = await getPaymentsByInvoiceId(id);
-
-  const paidAmount = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
-  const totalAmount = invoice.total_amount || 0;
-
-  let newStatus: "Unpaid" | "Paid" | "Partial" = "Unpaid";
-  if (paidAmount >= totalAmount) {
-    newStatus = "Paid";
-  } else if (paidAmount > 0) {
-    newStatus = "Partial";
-  }
-
-  return await updateInvoice(id, { status: newStatus });
+  return updateInvoice(id, {});
 }
 
+/** permanent = true: xóa vĩnh viễn (chỉ áp dụng cho hóa đơn đã ở Thùng rác) */
 export async function deleteInvoice(id: string, permanent = false): Promise<void> {
-  const authHeaders = await getAuthHeaderClient();
   const url = `/api/invoices/${id}` + (permanent ? "?hard=true" : "");
   const res = await fetch(url, {
     method: "DELETE",
-    headers: authHeaders
+    headers: getAuthHeaderClient(),
   });
-  if (!res.ok) {
-    let detail = "";
-    try {
-      detail = (await res.json()).error;
-    } catch {
-      detail = await res.text();
-    }
-    throw new Error(detail || "Không thể xóa hóa đơn");
-  }
+  await parseResponse<unknown>(
+    res,
+    permanent ? "Không thể xóa vĩnh viễn hóa đơn" : "Không thể xóa hóa đơn"
+  );
 }
 
 export async function getDisabledInvoices(): Promise<Invoice[]> {
-  const authHeaders = await getAuthHeaderClient();
   const res = await fetch("/api/invoices?disabled=true", {
     cache: "no-store",
-    headers: authHeaders
+    headers: getAuthHeaderClient(),
   });
-  if (!res.ok) throw new Error("Không thể lấy danh sách hóa đơn đã xóa");
-  return res.json();
+  const data = await parseResponse<unknown>(res, "Không thể lấy danh sách hóa đơn đã xóa");
+  // Chỉ giữ hóa đơn thực sự đã xóa để không bao giờ thao tác "Xóa vĩnh viễn" lên hóa đơn đang hoạt động
+  return (Array.isArray(data) ? (data as Invoice[]) : []).filter((inv) => inv.disabled === true);
 }
 
-export async function restoreInvoice(id: string): Promise<Invoice> {
-  const authHeaders = await getAuthHeaderClient();
+export async function restoreInvoice(id: string): Promise<void> {
   const res = await fetch(`/api/invoices/${id}/restore`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders
-    },
+    headers: getAuthHeaderClient(),
   });
-  if (!res.ok) throw new Error("Không thể khôi phục hóa đơn");
-  return res.json();
+  await parseResponse<unknown>(res, "Không thể khôi phục hóa đơn");
 }

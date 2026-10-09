@@ -1,7 +1,7 @@
 // KẾ THỪA
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { BellOutlined } from "@ant-design/icons";
 import { Badge, Dropdown, Spin, Button, Empty } from "antd";
 import type { MenuProps } from "antd";
@@ -16,96 +16,71 @@ import { useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import { vi } from "date-fns/locale";
 
+// Chỉ dùng polling (không SSE do chạy serverless)
+const POLL_INTERVAL_MS = 30000;
+
 export default function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const router = useRouter();
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const mountedRef = useRef(true);
+  // Số thứ tự request và số lần thay đổi trạng thái đọc: response cũ về sau "đánh dấu đã đọc" sẽ bị bỏ qua
+  const requestSeqRef = useRef(0);
+  const mutationSeqRef = useRef(0);
 
-  const fetchNotifications = async () => {
+  const fetchNotifications = useCallback(async () => {
+    const seq = ++requestSeqRef.current;
+    const mutationAtStart = mutationSeqRef.current;
     try {
       setLoading(true);
       const [notifs, count] = await Promise.all([
         getNotifications(),
         getUnreadCount(),
       ]);
+      const isStale =
+        !mountedRef.current ||
+        seq !== requestSeqRef.current ||
+        mutationAtStart !== mutationSeqRef.current;
+      if (isStale) return;
       setNotifications(notifs);
       setUnreadCount(count);
     } catch (error) {
       console.error("Error fetching notifications:", error);
     } finally {
-      setLoading(false);
+      if (mountedRef.current && seq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     fetchNotifications();
 
-    intervalRef.current = setInterval(() => {
+    const intervalId = setInterval(() => {
       fetchNotifications();
-    }, 30000);
+    }, POLL_INTERVAL_MS);
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+      mountedRef.current = false;
+      clearInterval(intervalId);
     };
-  }, []);
+  }, [fetchNotifications]);
 
   useEffect(() => {
     if (open) {
       fetchNotifications();
     }
-  }, [open]);
-
-  // SSE: Real-time notifications
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const token = sessionStorage.getItem("token") || localStorage.getItem("token");
-    if (!token) return;
-
-    const es = new EventSource(`/api/notifications/stream?token=${encodeURIComponent(token)}`);
-    eventSourceRef.current = es;
-
-    es.onmessage = (e) => {
-      try {
-        const notif = JSON.parse(e.data);
-        console.log('Received notification via SSE:', notif);
-
-        // Immediately update unread count (notification is always unread when broadcast)
-        setUnreadCount(prev => prev + 1);
-
-        // Add notification to the list immediately (at the top)
-        setNotifications(prev => [notif, ...prev]);
-
-        // Optional: Still refresh from server after a short delay to ensure sync
-        setTimeout(() => {
-          fetchNotifications();
-        }, 1000);
-      } catch (err) {
-        console.error("SSE parse error:", err);
-      }
-    };
-
-    es.onerror = (err) => {
-      // EventSource will auto-reconnect; log errors for debugging
-      console.warn("SSE error:", err);
-    };
-
-    return () => {
-      es.close();
-      eventSourceRef.current = null;
-    };
-  }, []);
+  }, [open, fetchNotifications]);
 
   const handleNotificationClick = async (notification: Notification) => {
     if (!notification.read) {
+      mutationSeqRef.current++;
       try {
         await markAsRead(notification._id);
+        mutationSeqRef.current++;
         setNotifications((prev) =>
           prev.map((n) =>
             n._id === notification._id ? { ...n, read: true } : n
@@ -130,8 +105,11 @@ export default function NotificationBell() {
   };
 
   const handleMarkAllAsRead = async () => {
+    // Tăng trước và sau khi gọi API: mọi response bắt đầu trước khi server cập nhật xong đều bị bỏ qua
+    mutationSeqRef.current++;
     try {
       await markAllAsRead();
+      mutationSeqRef.current++;
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
       setUnreadCount(0);
     } catch (error) {

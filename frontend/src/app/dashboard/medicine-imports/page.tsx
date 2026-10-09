@@ -53,7 +53,7 @@ export default function MedicineImportsPage() {
             setImports(data);
         } catch (error) {
             console.error("Fetch medicine imports error:", error);
-            message.error("Không thể tải danh sách nhập thuốc");
+            message.error(error instanceof Error ? error.message : "Không thể tải danh sách nhập thuốc");
         } finally {
             setLoading(false);
         }
@@ -82,8 +82,8 @@ export default function MedicineImportsPage() {
             await deleteMedicineImport(_id);
             message.success("Đã xóa nhập thuốc");
             fetchImports();
-        } catch {
-            message.error("Xóa thất bại");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "Xóa thất bại");
         }
     };
     // 

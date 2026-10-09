@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Layout,
     Table,
@@ -36,7 +36,7 @@ interface PayrollTableItem extends Payroll {
 
 export default function PayrollPage() {
     const [payrolls, setPayrolls] = useState<PayrollTableItem[]>([]);
-    const [filteredPayrolls, setFilteredPayrolls] = useState<PayrollTableItem[]>([]);
+    const [searchText, setSearchText] = useState("");
     const [loading, setLoading] = useState(true);
     const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
     const [sendingEmail, setSendingEmail] = useState(false);
@@ -118,7 +118,6 @@ export default function PayrollPage() {
 
             const activePayrolls = payrollsWithEmployee.filter((p) => !p.disabled);
             setPayrolls(activePayrolls);
-            setFilteredPayrolls(activePayrolls);
         } catch (error: any) {
             message.error("Không thể tải danh sách bảng lương: " + error.message);
         } finally {
@@ -129,6 +128,17 @@ export default function PayrollPage() {
     useEffect(() => {
         fetchPayrolls();
     }, []);
+
+    // Danh sách hiển thị suy ra từ danh sách gốc + ô tìm kiếm (giữ bộ lọc sau khi tải lại)
+    const filteredPayrolls = useMemo(() => {
+        const searchValue = searchText.trim().toLowerCase();
+        if (!searchValue) return payrolls;
+        return payrolls.filter(
+            (p) =>
+                p.employeeName.toLowerCase().includes(searchValue) ||
+                p.employeeEmail.toLowerCase().includes(searchValue)
+        );
+    }, [payrolls, searchText]);
 
     useEffect(() => {
         const visibleKeys = filteredPayrolls.map((p) => p._id);
@@ -144,17 +154,7 @@ export default function PayrollPage() {
 
     // TỰ VIẾT
     const onSearch = (value: string) => {
-        if (!value.trim()) {
-            setFilteredPayrolls(payrolls);
-        } else {
-            const searchValue = value.toLowerCase();
-            const filtered = payrolls.filter(
-                (p) =>
-                    p.employeeName.toLowerCase().includes(searchValue) ||
-                    p.employeeEmail.toLowerCase().includes(searchValue)
-            );
-            setFilteredPayrolls(filtered);
-        }
+        setSearchText(value);
     };
 
     const handleDelete = async (id: string) => {
@@ -168,13 +168,12 @@ export default function PayrollPage() {
     };
     // 
 
-    const handleSendEmail = async (employeeId: string) => {
-        const employeeIdStr = String(employeeId);
-
-        setSendingEmailIds((prev) => new Set(prev).add(employeeIdStr));
+    // Gửi đúng bảng lương của dòng được bấm (theo payroll id), không phải bảng lương tháng hiện tại
+    const handleSendEmail = async (payrollId: string) => {
+        setSendingEmailIds((prev) => new Set(prev).add(payrollId));
 
         try {
-            const result = await PayrollService.sendPayrollToEmployee(employeeId);
+            const result = await PayrollService.sendPayrollEmail(payrollId);
 
             message.success(
                 result.message || "Đã gửi email bảng lương thành công",
@@ -188,7 +187,7 @@ export default function PayrollPage() {
         } finally {
             setSendingEmailIds((prev) => {
                 const newSet = new Set(prev);
-                newSet.delete(employeeIdStr);
+                newSet.delete(payrollId);
                 return newSet;
             });
         }
@@ -196,34 +195,26 @@ export default function PayrollPage() {
 
     const handleSendBulkEmail = async () => {
         if (selectedRowKeys.length === 0) {
-            message.warning("Vui lòng chọn ít nhất một nhân viên để gửi email");
+            message.warning("Vui lòng chọn ít nhất một bảng lương để gửi email");
             return;
         }
 
         try {
             setSendingEmail(true);
 
-            const selectedPayrolls = filteredPayrolls.filter((p) =>
-                selectedRowKeys.includes(p._id)
-            );
+            // Mỗi dòng là một bảng lương riêng (một nhân viên có thể có nhiều tháng)
+            const payrollIds = filteredPayrolls
+                .filter((p) => selectedRowKeys.includes(p._id))
+                .map((p) => p._id);
 
-            const employeeIds = selectedPayrolls
-                .map((p) => {
-                    if (typeof p.employee_id === "string") {
-                        return p.employee_id;
-                    }
-                    return p.employee_id._id;
-                })
-                .filter((id) => id); // Loại bỏ các giá trị null/undefined
-
-            const result = await PayrollService.sendPayrollBulk(employeeIds);
+            const result = await PayrollService.sendPayrollEmailBulk(payrollIds);
 
             if (result.results && Array.isArray(result.results)) {
                 const successResults = result.results.filter(
-                    (r: any) => r.status === "success"
+                    (r) => r.status === "success"
                 );
                 const failedResults = result.results.filter(
-                    (r: any) => r.status === "failed"
+                    (r) => r.status === "failed"
                 );
                 const successCount = successResults.length;
                 const failCount = failedResults.length;
@@ -232,22 +223,22 @@ export default function PayrollPage() {
 
                 if (failCount === 0) {
                     message.success(
-                        `Đã gửi email thành công cho ${successCount} nhân viên`,
+                        `Đã gửi thành công ${successCount} email bảng lương`,
                         3
                     );
                 } else {
                     message.warning(
-                        `Đã gửi email thành công cho ${successCount} nhân viên, thất bại ${failCount} nhân viên`,
+                        `Đã gửi thành công ${successCount} email bảng lương, thất bại ${failCount}`,
                         5
                     );
 
-                    failedResults.forEach((r: any) => {
-                        console.error(`Lỗi gửi email cho ${r.employeeId}:`, r.message);
+                    failedResults.forEach((r) => {
+                        console.error(`Lỗi gửi email bảng lương ${r.payrollId}:`, r.message);
                     });
                 }
             } else {
                 await fetchPayrolls();
-                message.success("Đã gửi email cho các nhân viên đã chọn", 3);
+                message.success("Đã gửi email cho các bảng lương đã chọn", 3);
             }
 
             setSelectedRowKeys([]);
@@ -417,11 +408,9 @@ export default function PayrollPage() {
             title: "Thao tác",
             key: "action",
             render: (_, record) => {
-                const employeeId = typeof record.employee_id === "string"
-                    ? record.employee_id
-                    : record.employee_id._id;
-                const employeeIdStr = String(employeeId);
-                const isSending = sendingEmailIds.has(employeeIdStr);
+                const isSending = sendingEmailIds.has(record._id);
+                // Nhân viên đã bị xóa (employee_id null) hoặc không có email thì không gửi được
+                const canSendEmail = !!record.employee_id && record.employeeEmail !== "N/A";
                 const canEdit = role === "admin" || role === "accountant";
                 const canDelete = role === "admin";
 
@@ -439,9 +428,9 @@ export default function PayrollPage() {
                         <Button
                             type="link"
                             icon={<MailOutlined />}
-                            onClick={() => handleSendEmail(employeeId)}
+                            onClick={() => handleSendEmail(record._id)}
                             loading={isSending}
-                            disabled={isSending}
+                            disabled={isSending || !canSendEmail}
                         >
                             Gửi email
                         </Button>
@@ -487,7 +476,7 @@ export default function PayrollPage() {
                                 loading={sendingEmail}
                                 style={{ backgroundColor: "#52c41a", borderColor: "#52c41a" }}
                             >
-                                Gửi email cho {selectedRowKeys.length} nhân viên đã chọn
+                                Gửi email {selectedRowKeys.length} bảng lương đã chọn
                             </Button>
                         )}
                         {(role === "admin" || role === "accountant") && (

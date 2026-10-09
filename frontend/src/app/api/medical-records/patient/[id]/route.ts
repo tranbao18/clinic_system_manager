@@ -19,16 +19,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
             headers,
         });
 
+        // Đọc body đúng một lần
+        const text = await res.text();
+        let data: any = null;
+        try {
+            data = text ? JSON.parse(text) : null;
+        } catch {
+            data = null;
+        }
+
         if (!res.ok) {
-            const text = await res.text();
             console.error(`External API (GET medical records for patient ${id}) error:`, res.status, text);
+            const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
             return NextResponse.json(
-                { error: "Không thể lấy hồ sơ y tế", detail: text },
+                { ...body, error: body.error || body.message || "Không thể lấy hồ sơ y tế" },
                 { status: res.status }
             );
         }
 
-        const data = await res.json();
         const list = Array.isArray(data) ? data : [];
         return NextResponse.json(list);
     } catch (err: any) {
@@ -39,4 +47,3 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         );
     }
 }
-

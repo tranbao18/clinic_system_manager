@@ -49,9 +49,12 @@ export default function PatientsPage() {
         try {
             setLoading(true);
             const res = await fetch("/api/patients", { cache: "no-store" });
-            const data = await res.json();
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                throw new Error(data?.error || "Không thể tải danh sách bệnh nhân");
+            }
 
-            const list = Array.isArray(data) ? data : data.patients || [];
+            const list = Array.isArray(data) ? data : data?.patients || [];
 
             const mappedList = list.map((patient: any) => ({
                 ...patient,
@@ -60,9 +63,9 @@ export default function PatientsPage() {
 
             setPatients(mappedList);
             setFilteredPatients(mappedList);
-        } catch (error) {
+        } catch (error: any) {
             console.error("Fetch patients error:", error);
-            message.error("Không thể tải danh sách bệnh nhân");
+            message.error(error?.message || "Không thể tải danh sách bệnh nhân");
         } finally {
             setLoading(false);
         }
@@ -137,8 +140,8 @@ export default function PatientsPage() {
             await deletePatient(_id);
             message.success("Đã xóa bệnh nhân");
             fetchPatients();
-        } catch {
-            message.error("Xóa thất bại");
+        } catch (error: any) {
+            message.error(error?.message || "Xóa thất bại");
         }
     };
     //

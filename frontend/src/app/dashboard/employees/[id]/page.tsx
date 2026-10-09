@@ -76,10 +76,9 @@ export default function EmployeeDetailPage() {
   // TỰ VIẾT
   const formattedDate = (dateString?: string) => {
     if (!dateString) return "-";
-    const d = new Date(dateString);
-    return `${d.getDate().toString().padStart(2, "0")}/${(d.getMonth() + 1)
-      .toString()
-      .padStart(2, "0")}/${d.getFullYear()}`;
+    // dayjs đọc "YYYY-MM-DD" theo giờ địa phương nên không lệch ngày
+    const d = dayjs(dateString);
+    return d.isValid() ? d.format("DD/MM/YYYY") : "-";
   };
 
   useEffect(() => {
@@ -181,15 +180,16 @@ export default function EmployeeDetailPage() {
 
       const payload = {
         ...values,
-        dob: values.dob ? dayjs(values.dob).toISOString() : undefined,
+        // Ngày sinh là ngày thuần: toISOString() làm lùi 1 ngày (UTC+7) sau mỗi lần lưu
+        dob: values.dob ? dayjs(values.dob).format("YYYY-MM-DD") : undefined,
       };
 
       await EmployeesService.updateEmployee(employee._id, payload);
       message.success("Cập nhật thông tin nhân viên thành công!");
       setEmployee({ ...employee, ...payload });
       setEditMode(false);
-    } catch {
-      message.error("Không thể cập nhật thông tin nhân viên");
+    } catch (error: any) {
+      message.error(error?.message || "Không thể cập nhật thông tin nhân viên");
     } finally {
       setSaving(false);
     }

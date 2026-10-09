@@ -9,6 +9,7 @@ import UsersService from "@/lib/services/usersService";
 import { LineChart, PieChart, pieArcLabelClasses } from "@mui/x-charts";
 import { Box } from "@mui/material";
 import { Spin, message } from "antd";
+import { handleAuthRedirect } from "@/lib/authHeaderClient";
 
 const data = [
     { name: "5k", uv: 30 },
@@ -149,11 +150,93 @@ interface ProfitLossMonthlyResponse {
     >;
 }
 
+// Đọc body một lần, kiểm tra res.ok trước khi dùng dữ liệu (trang lỗi HTML không còn gây lỗi parse JSON)
+async function readJsonOrThrow<T>(res: Response, fallback: string): Promise<T> {
+    const text = await res.text();
+    let data: any = null;
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = null;
+    }
+    if (!res.ok) {
+        if (res.status === 401) handleAuthRedirect();
+        throw new Error(data?.error || data?.message || fallback);
+    }
+    if (data === null) {
+        throw new Error(fallback);
+    }
+    return data as T;
+}
+
+// Đồng hồ cập nhật mỗi giây/phút nằm trong component riêng để không render lại cả trang (và biểu đồ)
+function useNow(intervalMs: number) {
+    const [now, setNow] = useState(() => new Date());
+    useEffect(() => {
+        const timer = setInterval(() => setNow(new Date()), intervalMs);
+        return () => clearInterval(timer);
+    }, [intervalMs]);
+    return now;
+}
+
+const WEEKDAYS = ["Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"];
+
+const formatDate = (date: Date) =>
+    `${WEEKDAYS[date.getDay()]}, ${date.getDate()} Tháng ${date.getMonth() + 1} ${date.getFullYear()}`;
+
+const formatTime = (date: Date) => {
+    const hours = date.getHours().toString().padStart(2, "0");
+    const minutes = date.getMinutes().toString().padStart(2, "0");
+    const seconds = date.getSeconds().toString().padStart(2, "0");
+    return `${hours}:${minutes}:${seconds}`;
+};
+
+function Greeting({ name }: { name: string }) {
+    const now = useNow(60000);
+    const hour = now.getHours();
+    const greeting = hour < 12 ? "Chào buổi sáng" : hour < 18 ? "Chào buổi chiều" : "Chào buổi tối";
+    return (
+        <>
+            {greeting}, {name || "bạn"}!
+        </>
+    );
+}
+
+function DateTimeCards() {
+    const now = useNow(1000);
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card>
+                <CardContent className="p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                        <Calendar className="w-6 h-6 text-blue-600" />
+                        <h2 className="text-xl font-semibold text-gray-700">Ngày</h2>
+                    </div>
+                    <p className="text-2xl font-bold text-gray-800">
+                        {formatDate(now)}
+                    </p>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardContent className="p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                        <Clock className="w-6 h-6 text-green-600" />
+                        <h2 className="text-xl font-semibold text-gray-700">Giờ</h2>
+                    </div>
+                    <p className="text-3xl font-bold text-gray-800 font-mono">
+                        {formatTime(now)}
+                    </p>
+                </CardContent>
+            </Card>
+        </div>
+    );
+}
+
 export default function Dashboard() {
     const [role, setRole] = useState<string>("");
     const [employeeName, setEmployeeName] = useState<string>("");
     const [loading, setLoading] = useState(true);
-    const [currentTime, setCurrentTime] = useState(new Date());
     const [currentQuote, setCurrentQuote] = useState<Quote>(getRandomFallbackQuote());
     const [reportLoading, setReportLoading] = useState(false);
     const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -286,16 +369,6 @@ export default function Dashboard() {
     }, [loading, role]);
     //
 
-    // TỰ VIẾT
-    useEffect(() => {
-        const timer = setInterval(() => {
-            setCurrentTime(new Date());
-        }, 1000);
-
-        return () => clearInterval(timer);
-    }, []);
-    //
-
     useEffect(() => {
         const fetchReportData = async () => {
             if (role !== "admin") return;
@@ -316,18 +389,10 @@ export default function Dashboard() {
                     ),
                 ]);
 
-                const invData = await invRes.json();
-                const qtyData = await qtyRes.json();
-                const valData = await valRes.json();
-                const plData = await plRes.json();
-
-                if (!invRes.ok) throw new Error(invData.error || "Không thể lấy tồn kho thuốc");
-                if (!qtyRes.ok)
-                    throw new Error(qtyData.error || "Không thể lấy tổng số lượng tồn kho");
-                if (!valRes.ok)
-                    throw new Error(valData.error || "Không thể lấy tổng giá trị tồn kho");
-                if (!plRes.ok)
-                    throw new Error(plData.error || "Không thể lấy báo cáo lãi/lỗ theo tháng");
+                const invData = await readJsonOrThrow<{ data?: InventoryItem[] }>(invRes, "Không thể lấy tồn kho thuốc");
+                const qtyData = await readJsonOrThrow<{ total_quantity?: number }>(qtyRes, "Không thể lấy tổng số lượng tồn kho");
+                const valData = await readJsonOrThrow<{ total_value?: number }>(valRes, "Không thể lấy tổng giá trị tồn kho");
+                const plData = await readJsonOrThrow<ProfitLossMonthlyResponse>(plRes, "Không thể lấy báo cáo lãi/lỗ theo tháng");
 
                 setInventory(invData.data || []);
                 setTotalQuantity(qtyData.total_quantity || 0);
@@ -343,53 +408,6 @@ export default function Dashboard() {
 
         fetchReportData();
     }, [role]);
-
-    const formatDate = (date: Date) => {
-        const days = [
-            "Chủ Nhật",
-            "Thứ Hai",
-            "Thứ Ba",
-            "Thứ Tư",
-            "Thứ Năm",
-            "Thứ Sáu",
-            "Thứ Bảy",
-        ];
-        const months = [
-            "Tháng 1",
-            "Tháng 2",
-            "Tháng 3",
-            "Tháng 4",
-            "Tháng 5",
-            "Tháng 6",
-            "Tháng 7",
-            "Tháng 8",
-            "Tháng 9",
-            "Tháng 10",
-            "Tháng 11",
-            "Tháng 12",
-        ];
-
-        const day = days[date.getDay()];
-        const dayNum = date.getDate();
-        const month = months[date.getMonth()];
-        const year = date.getFullYear();
-
-        return `${day}, ${dayNum} ${month} ${year}`;
-    };
-
-    const formatTime = (date: Date) => {
-        const hours = date.getHours().toString().padStart(2, "0");
-        const minutes = date.getMinutes().toString().padStart(2, "0");
-        const seconds = date.getSeconds().toString().padStart(2, "0");
-        return `${hours}:${minutes}:${seconds}`;
-    };
-
-    const getGreeting = () => {
-        const hour = currentTime.getHours();
-        if (hour < 12) return "Chào buổi sáng";
-        if (hour < 18) return "Chào buổi chiều";
-        return "Chào buổi tối";
-    };
 
     const { xLabels, incomeSeries, expenseSeries } = useMemo(() => {
         if (!monthlyProfitLoss || !monthlyProfitLoss.data) {
@@ -555,7 +573,7 @@ export default function Dashboard() {
                                         </div>
                                         <div>
                                             <h1 className="text-3xl font-bold text-gray-800">
-                                                {getGreeting()}, {employeeName || "bạn"}!
+                                                <Greeting name={employeeName} />
                                             </h1>
                                             <p className="text-lg text-gray-600">
                                                 {roleNames[role] || "Nhân viên"}
@@ -569,31 +587,7 @@ export default function Dashboard() {
                             </Card>
 
                             {/* Date and Time Cards */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <Card>
-                                    <CardContent className="p-6">
-                                        <div className="flex items-center gap-3 mb-4">
-                                            <Calendar className="w-6 h-6 text-blue-600" />
-                                            <h2 className="text-xl font-semibold text-gray-700">Ngày</h2>
-                                        </div>
-                                        <p className="text-2xl font-bold text-gray-800">
-                                            {formatDate(currentTime)}
-                                        </p>
-                                    </CardContent>
-                                </Card>
-
-                                <Card>
-                                    <CardContent className="p-6">
-                                        <div className="flex items-center gap-3 mb-4">
-                                            <Clock className="w-6 h-6 text-green-600" />
-                                            <h2 className="text-xl font-semibold text-gray-700">Giờ</h2>
-                                        </div>
-                                        <p className="text-3xl font-bold text-gray-800 font-mono">
-                                            {formatTime(currentTime)}
-                                        </p>
-                                    </CardContent>
-                                </Card>
-                            </div>
+                            <DateTimeCards />
 
                             {/* Quote Card */}
                             <Card className="bg-gradient-to-r from-purple-50 to-pink-50 border-purple-200">
@@ -607,7 +601,7 @@ export default function Dashboard() {
                                                 Câu nói truyền cảm hứng
                                             </h2>
                                             <blockquote className="text-lg text-gray-800 italic mb-4 leading-relaxed">
-                                                "{currentQuote.text}"
+                                                &ldquo;{currentQuote.text}&rdquo;
                                             </blockquote>
                                             <p className="text-sm text-gray-600 text-right">
                                                 — {currentQuote.author}

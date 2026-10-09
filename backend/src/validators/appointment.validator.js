@@ -14,6 +14,8 @@ export default class AppointmentValidator {
   static updateAppointment() {
     return [
       param('id').isMongoId(),
+      body('doctor_id').optional().isMongoId().withMessage('Bác sĩ không hợp lệ'),
+      body('appointment_date').optional().isISO8601().withMessage('Ngày giờ hẹn không hợp lệ').toDate(),
       body('status').optional().isIn(['Scheduled', 'Completed', 'Cancelled']),
       body('reason').optional().isString()
     ];

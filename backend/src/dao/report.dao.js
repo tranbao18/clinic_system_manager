@@ -3,18 +3,44 @@ import Payment from '../models/payment.model.js';
 import MedicineImport from '../models/medicine-import.model.js';
 import PurchaseTransaction from '../models/purchase-transaction.model.js';
 import Payroll from '../models/payroll.model.js';
+import { APP_TIMEZONE } from '../config/timezone.js';
+
+// Tồn kho "dùng được" = lô còn hạn (cùng quy tắc với xuất kho FEFO); lô hết hạn / không có hạn dùng tính riêng
+const usableIf = (now, expr) => ({ $cond: [{ $gte: ["$expiry_date", now] }, expr, 0] });
+const expiredIf = (now, expr) => ({ $cond: [{ $gte: ["$expiry_date", now] }, 0, expr] });
+const stockValue = { $multiply: ["$remaining", "$unit_price"] };
+
+function inventoryGroup(id, now) {
+  return {
+    $group: {
+      _id: id,
+      total_remaining: { $sum: usableIf(now, "$remaining") },
+      total_value: { $sum: usableIf(now, stockValue) },
+      expired_remaining: { $sum: expiredIf(now, "$remaining") },
+      expired_value: { $sum: expiredIf(now, stockValue) }
+    }
+  };
+}
+
+// Khoảng thời gian luôn là [start, endExclusive); nhóm theo ngày/tháng/năm theo giờ Việt Nam
+function sumByPeriod(Model, dateField, amountField, start, endExclusive, format) {
+  return Model.aggregate([
+    { $match: { [dateField]: { $gte: start, $lt: endExclusive }, disabled: false } },
+    {
+      $group: {
+        _id: { $dateToString: { format, date: `$${dateField}`, timezone: APP_TIMEZONE } },
+        total: { $sum: `$${amountField}` }
+      }
+    },
+    { $sort: { _id: 1 } }
+  ]);
+}
 
 class ReportDAO {
   async getMedicineInventoryList() {
     return await MedicineImport.aggregate([
       { $match: { disabled: false } },
-      {
-        $group: {
-          _id: "$medicine_id",
-          total_remaining: { $sum: "$remaining" },
-          total_value: { $sum: { $multiply: ["$remaining", "$unit_price"] } }
-        }
-      },
+      inventoryGroup("$medicine_id", new Date()),
       {
         $lookup: {
           from: "medicines",
@@ -31,180 +57,88 @@ class ReportDAO {
           name: "$medicine.name",
           unit: "$medicine.unit",
           total_remaining: 1,
-          total_value: 1
+          total_value: 1,
+          expired_remaining: 1,
+          expired_value: 1
         }
       }
     ]);
   }
-  async getTotalMedicineQuantity() {
-    const result = await MedicineImport.aggregate([
+  async getInventoryTotals() {
+    const [result] = await MedicineImport.aggregate([
       { $match: { disabled: false } },
-      {
-        $group: {
-          _id: null,
-          total_remaining: { $sum: "$remaining" }
-        }
-      }
+      inventoryGroup(null, new Date())
     ]);
 
-    return result[0]?.total_remaining || 0;
-  }
-  async getTotalMedicineValue() {
-    const result = await MedicineImport.aggregate([
-      { $match: { disabled: false } },
-      {
-        $group: {
-          _id: null,
-          total_value: { $sum: { $multiply: ["$remaining", "$unit_price"] } }
-        }
-      }
-    ]);
-
-    return result[0]?.total_value || 0;
+    return {
+      total_remaining: result?.total_remaining || 0,
+      total_value: result?.total_value || 0,
+      expired_remaining: result?.expired_remaining || 0,
+      expired_value: result?.expired_value || 0
+    };
   }
 
   // 1) Gom theo ngày
-  async getPaymentsByDateRange(start, end) {
-    return Payment.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
-          total: { $sum: "$amount" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getPaymentsByDateRange(start, endExclusive) {
+    return sumByPeriod(Payment, "date", "amount", start, endExclusive, "%Y-%m-%d");
   }
-  async getMedicinePurchaseByDateRange(start, end) {
-    return PurchaseTransaction.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
-          total: { $sum: "$amount" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getMedicinePurchaseByDateRange(start, endExclusive) {
+    return sumByPeriod(PurchaseTransaction, "date", "amount", start, endExclusive, "%Y-%m-%d");
   }
-  async getPayrollByDateRange(start, end) {
-    return Payroll.aggregate([
-      { $match: { paydate: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$paydate" } },
-          total: { $sum: "$net_salary" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getPayrollByDateRange(start, endExclusive) {
+    return sumByPeriod(Payroll, "paydate", "net_salary", start, endExclusive, "%Y-%m-%d");
   }
-  async getFinancialSummary(start, end) {
+  async getFinancialSummary(start, endExclusive) {
     const [income, medicineCost, payrollCost] = await Promise.all([
-      this.getPaymentsByDateRange(start, end),
-      this.getMedicinePurchaseByDateRange(start, end),
-      this.getPayrollByDateRange(start, end)
+      this.getPaymentsByDateRange(start, endExclusive),
+      this.getMedicinePurchaseByDateRange(start, endExclusive),
+      this.getPayrollByDateRange(start, endExclusive)
     ]);
 
     return { income, medicineCost, payrollCost };
   }
 
   // 2) Gom theo tháng (YYYY-MM)
-  async getPaymentsByMonth(start, end) {
-    return Payment.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
-          total: { $sum: "$amount" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getPaymentsByMonth(start, endExclusive) {
+    return sumByPeriod(Payment, "date", "amount", start, endExclusive, "%Y-%m");
   }
-  async getMedicinePurchaseByMonth(start, end) {
-    return PurchaseTransaction.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
-          total: { $sum: "$amount" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getMedicinePurchaseByMonth(start, endExclusive) {
+    return sumByPeriod(PurchaseTransaction, "date", "amount", start, endExclusive, "%Y-%m");
   }
-  async getPayrollByMonth(start, end) {
-    return Payroll.aggregate([
-      { $match: { paydate: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$paydate" } },
-          total: { $sum: "$net_salary" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getPayrollByMonth(start, endExclusive) {
+    return sumByPeriod(Payroll, "paydate", "net_salary", start, endExclusive, "%Y-%m");
   }
-  async getFinancialSummaryByMonth(start, end) {
+  async getFinancialSummaryByMonth(start, endExclusive) {
     const [income, medicineCost, payrollCost] = await Promise.all([
-      this.getPaymentsByMonth(start, end),
-      this.getMedicinePurchaseByMonth(start, end),
-      this.getPayrollByMonth(start, end)
+      this.getPaymentsByMonth(start, endExclusive),
+      this.getMedicinePurchaseByMonth(start, endExclusive),
+      this.getPayrollByMonth(start, endExclusive)
     ]);
 
     return { income, medicineCost, payrollCost };
   }
 
   // 3) Gom theo năm (YYYY)
-  async getPaymentsByYear(start, end) {
-    return Payment.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y", date: "$date" } },
-          total: { $sum: "$amount" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getPaymentsByYear(start, endExclusive) {
+    return sumByPeriod(Payment, "date", "amount", start, endExclusive, "%Y");
   }
-  async getMedicinePurchaseByYear(start, end) {
-    return PurchaseTransaction.aggregate([
-      { $match: { date: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y", date: "$date" } },
-          total: { $sum: "$amount" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getMedicinePurchaseByYear(start, endExclusive) {
+    return sumByPeriod(PurchaseTransaction, "date", "amount", start, endExclusive, "%Y");
   }
-  async getPayrollByYear(start, end) {
-    return Payroll.aggregate([
-      { $match: { paydate: { $gte: start, $lte: end }, disabled: false } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y", date: "$paydate" } },
-          total: { $sum: "$net_salary" }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+  async getPayrollByYear(start, endExclusive) {
+    return sumByPeriod(Payroll, "paydate", "net_salary", start, endExclusive, "%Y");
   }
-  async getFinancialSummaryByYear(start, end) {
+  async getFinancialSummaryByYear(start, endExclusive) {
     const [income, medicineCost, payrollCost] = await Promise.all([
-      this.getPaymentsByYear(start, end),
-      this.getMedicinePurchaseByYear(start, end),
-      this.getPayrollByYear(start, end)
+      this.getPaymentsByYear(start, endExclusive),
+      this.getMedicinePurchaseByYear(start, endExclusive),
+      this.getPayrollByYear(start, endExclusive)
     ]);
 
     return { income, medicineCost, payrollCost };
   }
 
-  mapByKey(arr) {
+  mapByKey(arr = []) {
     return Object.fromEntries(arr.map(d => [d._id, d.total]));
   }
 }

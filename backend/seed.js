@@ -1,9 +1,8 @@
+import 'dotenv/config';
+import './src/config/timezone.js';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import dotenv from 'dotenv';
 import User from './src/models/user.model.js';
-
-dotenv.config();
 
 const seedAdmin = async () => {
   try {

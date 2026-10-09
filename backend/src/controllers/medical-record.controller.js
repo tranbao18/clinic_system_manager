@@ -1,7 +1,11 @@
 import dao from '../dao/medical-record.dao.js';
+import AppointmentDAO from '../dao/appointment.dao.js';
+import EmployeeDAO from '../dao/employee.dao.js';
 import pickFields from '../utils/pick-fields.js';
 import Invoice from '../models/invoice.model.js';
+import Patient from '../models/patient.model.js';
 
+import errorStatus from '../utils/error-status.js';
 // So sánh toa thuốc theo (thuốc, số lượng); đổi liều dùng không ảnh hưởng kho/tiền
 const prescriptionKey = (list = []) =>
   list.map((p) => `${String(p.medicine_id?._id || p.medicine_id)}:${Number(p.quantity)}`).sort().join('|');
@@ -29,10 +33,46 @@ class MedicalRecordController {
     try {
       const payload = pickFields(req.body, CREATE_FIELDS);
       if (!payload.appointment_id) delete payload.appointment_id;
+      if (!payload.doctor_id) delete payload.doctor_id;
 
       // Bác sĩ tạo hồ sơ luôn đứng tên chính mình
-      if (req.user?.role === 'Doctor' && req.user.employee_id) {
+      const isDoctor = req.user?.role === 'Doctor' && Boolean(req.user.employee_id);
+      if (isDoctor) {
         payload.doctor_id = req.user.employee_id;
+      }
+
+      const patient = await Patient.findById(payload.patient_id).select('disabled').lean();
+      if (!patient || patient.disabled) {
+        return res.status(400).json({ error: 'Bệnh nhân không tồn tại hoặc đã bị xóa' });
+      }
+
+      let doctorFromAppointment = false;
+      if (payload.appointment_id) {
+        const appointment = await AppointmentDAO.model.findById(payload.appointment_id)
+          .select('patient_id doctor_id status disabled').lean();
+        if (!appointment || appointment.disabled || appointment.status === 'Cancelled') {
+          return res.status(400).json({ error: 'Lịch hẹn không tồn tại, đã bị xóa hoặc đã hủy' });
+        }
+        if (String(appointment.patient_id) !== String(payload.patient_id)) {
+          return res.status(400).json({ error: 'Lịch hẹn không thuộc bệnh nhân này' });
+        }
+        // Người tạo không phải bác sĩ (vd Admin): frontend gửi doctor_id là _id của User, không phải Employee
+        // -> lấy bác sĩ phụ trách từ lịch hẹn
+        if (!isDoctor && appointment.doctor_id) {
+          payload.doctor_id = String(appointment.doctor_id);
+          doctorFromAppointment = true;
+        }
+      }
+
+      // doctor_id do client gửi (không lấy được từ token/lịch hẹn) phải là nhân viên còn hoạt động,
+      // nếu không populate('doctor_id') trả null và các trang hiển thị bị lỗi
+      if (!isDoctor && !doctorFromAppointment) {
+        const doctor = payload.doctor_id
+          ? await EmployeeDAO.model.findById(payload.doctor_id).select('disabled').lean()
+          : null;
+        if (!doctor || doctor.disabled) {
+          return res.status(400).json({ error: 'Bác sĩ phụ trách không hợp lệ. Vui lòng chọn lịch hẹn hoặc bác sĩ hợp lệ.' });
+        }
       }
 
       // Nếu có appointment_id thì không cho phép tạo trùng hồ sơ cho cùng một lịch hẹn
@@ -53,7 +93,7 @@ class MedicalRecordController {
       const result = await dao.create(payload);
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -66,7 +106,7 @@ class MedicalRecordController {
       const result = await dao.findAll(filter);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -76,7 +116,7 @@ class MedicalRecordController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -98,7 +138,7 @@ class MedicalRecordController {
       const result = await dao.update(req.params.id, data);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -116,7 +156,7 @@ class MedicalRecordController {
       await dao.delete(req.params.id);
       res.json({ message: 'Deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -125,7 +165,7 @@ class MedicalRecordController {
       await dao.restore(req.params.id);
       res.json({ message: 'Restored' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -134,7 +174,7 @@ class MedicalRecordController {
       const result = await dao.findByPatientId(req.params.id);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 }

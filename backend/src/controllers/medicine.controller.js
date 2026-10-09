@@ -7,6 +7,7 @@ import MedicineService from '../services/medicine.service.js';
 import pickFields from '../utils/pick-fields.js';
 import { parseVNNumber, normalizeHeaderKey, isBlankCell, MAX_IMPORT_ROWS } from '../utils/import-parse.js';
 
+import errorStatus from '../utils/error-status.js';
 const FIELDS = ['name', 'category', 'unit', 'price'];
 
 class MedicineController {
@@ -15,7 +16,7 @@ class MedicineController {
       const result = await dao.create(pickFields(req.body, FIELDS));
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -59,7 +60,7 @@ class MedicineController {
 
       res.json(medicinesWithInventory);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -69,7 +70,7 @@ class MedicineController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -78,16 +79,26 @@ class MedicineController {
       const result = await dao.update(req.params.id, pickFields(req.body, FIELDS));
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
   async remove(req, res) {
     try {
+      if (req.query && req.query.hard === 'true') {
+        // Xóa vĩnh viễn chỉ áp dụng cho thuốc đã ở thùng rác (giống xóa hàng loạt)
+        const medicine = await dao.model.findById(req.params.id);
+        if (!medicine) return res.status(404).json({ error: 'Không tìm thấy thuốc' });
+        if (!medicine.disabled) {
+          return res.status(400).json({ error: 'Chỉ xóa vĩnh viễn được thuốc đã bị xóa (trong thùng rác)' });
+        }
+        await MedicineService.deleteCascade(req.params.id, true);
+        return res.json({ message: 'Permanently deleted' });
+      }
       await MedicineService.deleteCascade(req.params.id);
       res.json({ message: 'Deleted with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -96,16 +107,20 @@ class MedicineController {
       await MedicineService.restoreCascade(req.params.id);
       res.json({ message: 'Medicine restore with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
   // Kế thừa
   async bulkDelete(req, res) {
     try {
-      const ids = Array.isArray(req.body.ids) ? req.body.ids : (req.body && req.body.ids ? req.body.ids : []);
+      // Express 5: req.body là undefined nếu request không có body JSON
+      const ids = req.body?.ids;
       if (!Array.isArray(ids) || ids.length === 0) {
-        return res.status(400).json({ error: 'No ids provided' });
+        return res.status(400).json({ error: 'Chưa chọn thuốc cần xóa' });
+      }
+      if (!ids.every((id) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id))) {
+        return res.status(400).json({ error: 'Danh sách mã thuốc không hợp lệ' });
       }
 
       if (req.query && req.query.hard === 'true') {
@@ -129,7 +144,7 @@ class MedicineController {
       }
       res.json({ message: 'Deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

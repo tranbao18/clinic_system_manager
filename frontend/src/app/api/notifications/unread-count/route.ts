@@ -24,14 +24,26 @@ export async function GET(req: Request) {
       cache: "no-store",
     });
 
-    if (!res.ok) {
-      return NextResponse.json({ count: 0 });
+    // Đọc body một lần; trả nguyên status lỗi để client biết phiên hết hạn (401) thay vì nhận 200 {count: 0}
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
     }
 
-    const data = await res.json();
-    return NextResponse.json(data);
+    if (!res.ok) {
+      const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      return NextResponse.json(
+        { ...body, error: body.error || body.message || "Không thể lấy số thông báo chưa đọc", count: 0 },
+        { status: res.status }
+      );
+    }
+
+    return NextResponse.json(data ?? { count: 0 });
   } catch (err: any) {
     console.error("GET /api/notifications/unread-count exception:", err);
-    return NextResponse.json({ count: 0 });
+    return NextResponse.json({ error: err.message || "Lỗi hệ thống", count: 0 }, { status: 500 });
   }
 }

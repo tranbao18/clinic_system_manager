@@ -58,6 +58,7 @@ export default function NewEmployeePage() {
   }
   // 
   // TỰ VIẾT
+  // Chỉ gọi khi bấm Lưu (không kiểm tra theo từng phím gõ vì phải tải toàn bộ danh sách nhân viên)
   const validateEmailDuplicate = async (email: string) => {
     try {
       const response = await EmployeesService.getAll();
@@ -93,7 +94,8 @@ export default function NewEmployeePage() {
         role,
         employee: {
           fullname: values.fullname,
-          dob: values.dob ? dayjs(values.dob).toISOString() : null,
+          // Ngày sinh là ngày thuần: toISOString() sẽ lùi 1 ngày ở múi giờ UTC+7
+          dob: values.dob ? dayjs(values.dob).format("YYYY-MM-DD") : null,
           gender: mapGenderToApiValue(values.gender),
           phone: values.phone,
           email: values.email,
@@ -159,27 +161,23 @@ export default function NewEmployeePage() {
     } catch (error: any) {
       console.error("❌ Error:", error);
       const errMsg = (error && error.message) || String(error || "");
+      const lowerMsg = errMsg.toLowerCase();
 
-      if (
-        errMsg.includes("Email này đã được sử dụng") ||
-        errMsg.includes("duplicate key") ||
-        errMsg.includes("E11000") ||
-        errMsg.toLowerCase().includes("email")
-      ) {
+      // Chỉ gắn lỗi vào ô email khi đúng là email bị trùng; các lỗi khác hiển thị nguyên thông báo backend
+      const isDuplicateEmail =
+        lowerMsg.includes("email") &&
+        (lowerMsg.includes("đã được sử dụng") ||
+          lowerMsg.includes("đã tồn tại") ||
+          lowerMsg.includes("duplicate key") ||
+          lowerMsg.includes("e11000"));
+      if (isDuplicateEmail) {
         try {
-          form.setFields([
-            {
-              name: "email",
-              errors: ["Email này đã được sử dụng bởi nhân viên khác"],
-            },
-          ]);
+          form.setFields([{ name: "email", errors: [errMsg] }]);
         } catch (setErr) {
           console.warn("Không thể set field error:", setErr);
         }
-        message.error("Email đã tồn tại. Vui lòng sử dụng email khác.");
-      } else {
-        message.error(errMsg || "Lỗi khi tạo nhân viên");
       }
+      message.error(errMsg || "Lỗi khi tạo nhân viên");
     } finally {
       setLoading(false);
     }
@@ -241,13 +239,6 @@ export default function NewEmployeePage() {
               rules={[
                 { required: true, message: "Vui lòng nhập email" },
                 { type: "email", message: "Email không hợp lệ" },
-                {
-                  validator: async (_, value) => {
-                    if (value && value.trim()) {
-                      await validateEmailDuplicate(value.trim());
-                    }
-                  },
-                },
               ]}
               extra="📧 Email này sẽ nhận thông tin tài khoản (username và password) sau khi tạo nhân viên"
             >

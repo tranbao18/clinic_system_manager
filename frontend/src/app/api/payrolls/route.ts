@@ -1,78 +1,20 @@
 // KẾ THỪA
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthHeaderServer } from "@/lib/authHeaderServer";
+import { NextRequest } from "next/server";
+import { proxyToBackend, proxyWithJsonBody, toArray } from "@/lib/backendProxy";
 
-const API_URL = `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/payrolls`;
-
-async function safeJsonParse(res: Response) {
-    const text = await res.text();
-    try {
-        return JSON.parse(text);
-    } catch (err) {
-        console.error("❌ Response không phải JSON:", text);
-        throw new Error(`Response từ backend không hợp lệ: ${res.url}`);
-    }
+export async function GET() {
+    return proxyToBackend({
+        path: "/api/payrolls",
+        errorMessage: "Không thể tải danh sách bảng lương",
+        transform: toArray,
+    });
 }
 
-export async function GET(req: NextRequest) {
-    try {
-        const rawHeaders = await getAuthHeaderServer();
-        const headers: Record<string, string> = {};
-
-        if (rawHeaders?.Authorization) {
-            headers.Authorization = rawHeaders.Authorization;
-        }
-
-        const res = await fetch(API_URL, {
-            headers,
-            cache: "no-store",
-        });
-
-        if (!res.ok) {
-            const text = await res.text();
-            console.error("❌ Backend GET error:", text);
-            return NextResponse.json({ error: text }, { status: res.status });
-        }
-
-        const data = await safeJsonParse(res);
-        const list = Array.isArray(data) ? data : [];
-
-        return NextResponse.json(list, { status: 200 });
-    } catch (error: any) {
-        console.error("GET /api/payrolls error:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-}
-
+// Lỗi nghiệp vụ (lương âm, trùng tháng) trả 400 kèm thông báo của backend
 export async function POST(req: NextRequest) {
-    try {
-        const body = await req.json();
-        const rawHeaders = await getAuthHeaderServer();
-        const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-        };
-
-        if (rawHeaders?.Authorization) {
-            headers.Authorization = rawHeaders.Authorization;
-        }
-
-        const res = await fetch(API_URL, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-        });
-
-        if (!res.ok) {
-            const text = await res.text();
-            console.error("❌ Backend POST error:", text);
-            return NextResponse.json({ error: text }, { status: res.status });
-        }
-
-        const data = await safeJsonParse(res);
-        return NextResponse.json(data, { status: 200 });
-    } catch (error: any) {
-        console.error("POST /api/payrolls error:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    return proxyWithJsonBody(req, {
+        path: "/api/payrolls",
+        method: "POST",
+        errorMessage: "Không thể tạo bảng lương",
+    });
 }
-

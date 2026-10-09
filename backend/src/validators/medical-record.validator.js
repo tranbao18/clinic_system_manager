@@ -21,7 +21,8 @@ export default class MedicalRecordValidator {
         })
         .withMessage('appointment_id phải là MongoDB ObjectId hợp lệ'),
       body('patient_id').isMongoId().withMessage('patient_id phải là MongoDB ObjectId hợp lệ'),
-      body('doctor_id').isMongoId().withMessage('doctor_id phải là MongoDB ObjectId hợp lệ'),
+      // Có thể bỏ trống: controller lấy từ tài khoản bác sĩ hoặc từ lịch hẹn, và kiểm tra lại trước khi lưu
+      body('doctor_id').optional({ checkFalsy: true }).isMongoId().withMessage('doctor_id phải là MongoDB ObjectId hợp lệ'),
       body('diagnosis').isString().notEmpty().withMessage('Chẩn đoán không được để trống'),
       body('treatment').optional().isString(),
       body('notes').optional().isString(),

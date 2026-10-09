@@ -1,5 +1,7 @@
-import dotenv from "dotenv";
-dotenv.config();
+// Side-effect import chạy đúng thứ tự: nạp .env rồi đặt múi giờ TRƯỚC khi các module khác được nạp
+// (dotenv.config() trong thân file chỉ chạy SAU khi mọi import đã được đánh giá)
+import 'dotenv/config';
+import './src/config/timezone.js';
 
 import connectDB from './src/config/db.js';
 import app from './server.js';

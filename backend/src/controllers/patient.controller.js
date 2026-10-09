@@ -2,6 +2,7 @@ import dao from '../dao/patient.dao.js';
 import PatientService from '../services/patient.service.js';
 import pickFields from '../utils/pick-fields.js';
 
+import errorStatus from '../utils/error-status.js';
 // Frontend gửi cả document (có _id, disabled, __v...) khi sửa: chỉ giữ các field thông tin
 const FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'medical_history'];
 
@@ -11,7 +12,7 @@ class PatientController {
       const result = await dao.create(pickFields(req.body, FIELDS));
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -24,7 +25,7 @@ class PatientController {
       const result = await dao.findAll(filter);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -34,7 +35,7 @@ class PatientController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -44,20 +45,23 @@ class PatientController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
   async remove(req, res) {
     try {
       if (req.query && req.query.hard === 'true') {
-        await PatientService.deleteCascade(req.params.id, true);
-        res.json({ message: 'Hard deleted with cascade' });
+        const removed = await PatientService.deleteCascade(req.params.id, true);
+        if (!removed) return res.status(404).json({ message: 'Not found' });
+        return res.json({ message: 'Hard deleted with cascade' });
       }
-      await PatientService.deleteCascade(req.params.id);
+      const removed = await PatientService.deleteCascade(req.params.id);
+      if (!removed) return res.status(404).json({ message: 'Not found' });
       res.json({ message: 'Deleted with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      // status 400 khi bệnh nhân đã có hóa đơn (không cho xóa vĩnh viễn)
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -66,7 +70,7 @@ class PatientController {
       await PatientService.restoreCascade(req.params.id);
       res.json({ message: 'Patient restore with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Table,
     Button,
@@ -49,9 +49,17 @@ const getStatusText = (status: string) => {
     }
 };
 
+const normalizeText = (str: string) =>
+    str
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9\s]/g, "")
+        .toLowerCase()
+        .trim();
+
 export default function InvoicesPage() {
+    // Danh sách gốc (không lọc); danh sách hiển thị luôn được suy ra từ danh sách gốc + bộ lọc
     const [invoices, setInvoices] = useState<Invoice[]>([]);
-    const [filteredInvoices, setFilteredInvoices] = useState<Invoice[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchText, setSearchText] = useState("");
     const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -62,12 +70,11 @@ export default function InvoicesPage() {
     const fetchInvoices = async () => {
         try {
             setLoading(true);
-            const data = await getInvoices(statusFilter ? { status: statusFilter } : undefined);
+            const data = await getInvoices();
             setInvoices(data);
-            setFilteredInvoices(data);
         } catch (error) {
             console.error("Fetch invoices error:", error);
-            message.error("Không thể tải danh sách hóa đơn");
+            message.error(error instanceof Error ? error.message : "Không thể tải danh sách hóa đơn");
         } finally {
             setLoading(false);
         }
@@ -91,17 +98,9 @@ export default function InvoicesPage() {
     }, []);
     // 
 
-    const normalizeText = (str: string) =>
-        str
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-zA-Z0-9\s]/g, "")
-            .toLowerCase()
-            .trim();
-
-    const handleFilter = (text: string, status: string | null) => {
-        let filtered = [...invoices];
-        const search = normalizeText(text);
+    const filteredInvoices = useMemo(() => {
+        let filtered = invoices;
+        const search = normalizeText(searchText);
 
         if (search) {
             filtered = filtered.filter((item) => {
@@ -119,12 +118,12 @@ export default function InvoicesPage() {
             });
         }
 
-        if (status) {
-            filtered = filtered.filter((item) => item.status === status);
+        if (statusFilter) {
+            filtered = filtered.filter((item) => item.status === statusFilter);
         }
 
-        setFilteredInvoices(filtered);
-    };
+        return filtered;
+    }, [invoices, searchText, statusFilter]);
 
     // TỰ VIẾT
     const handleDelete = async (id: string) => {
@@ -244,20 +243,14 @@ export default function InvoicesPage() {
                         placeholder="Tìm kiếm theo tên bệnh nhân, mã hóa đơn..."
                         allowClear
                         style={{ width: 300 }}
-                        onChange={(e) => {
-                            setSearchText(e.target.value);
-                            handleFilter(e.target.value, statusFilter);
-                        }}
+                        onChange={(e) => setSearchText(e.target.value)}
                         value={searchText}
                     />
                     <Select
                         placeholder="Lọc theo trạng thái"
                         allowClear
                         style={{ width: 200 }}
-                        onChange={(value) => {
-                            setStatusFilter(value);
-                            handleFilter(searchText, value);
-                        }}
+                        onChange={(value) => setStatusFilter(value ?? null)}
                         value={statusFilter}
                     >
                         <Option value="Unpaid">Chưa thanh toán</Option>

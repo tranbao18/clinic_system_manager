@@ -2,14 +2,74 @@
 import dao from '../dao/appointment.dao.js';
 import notificationDao from '../dao/notification.dao.js';
 import UserDAO from '../dao/user.dao.js';
+import EmployeeDAO from '../dao/employee.dao.js';
 import Patient from '../models/patient.model.js';
 import AppointmentService from '../services/appointment.service.js';
 import MedicalRecordDAO from '../dao/medical-record.dao.js';
 import InvoiceDAO from '../dao/invoice.dao.js';
 import pickFields from '../utils/pick-fields.js';
 
+import errorStatus from '../utils/error-status.js';
 const CREATE_FIELDS = ['patient_id', 'doctor_id', 'appointment_date', 'status', 'reason'];
 const UPDATE_FIELDS = ['doctor_id', 'appointment_date', 'status', 'reason'];
+
+// Luôn hiển thị theo giờ Việt Nam, không phụ thuộc TZ của server
+const formatVNDateTime = (date) => new Date(date).toLocaleString('vi-VN', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit'
+});
+
+const conflictBody = (existing) => ({
+  error: `Bác sĩ đã có lịch hẹn lúc ${formatVNDateTime(existing.appointment_date)}. Vui lòng chọn thời gian khác.`
+});
+
+async function findActiveEmployee(id) {
+  const employee = await EmployeeDAO.model.findById(id).select('fullname disabled').lean();
+  return employee && !employee.disabled ? employee : null;
+}
+
+// Kế thừa
+// Gửi thông báo cho bác sĩ phụ trách và lễ tân. Chạy TRƯỚC khi trả response vì trên serverless
+// tiến trình có thể bị dừng ngay sau response; lỗi chỉ ghi log, không làm hỏng request.
+async function notifyAppointmentCreated(appointment, patientName) {
+  const formattedDate = formatVNDateTime(appointment.appointment_date);
+  const name = patientName || 'Bệnh nhân';
+  const tasks = [];
+
+  const doctorId = appointment.doctor_id?._id ?? appointment.doctor_id;
+  if (doctorId) {
+    tasks.push((async () => {
+      const doctorUser = await UserDAO.findEmployAcc(String(doctorId));
+      if (!doctorUser) {
+        console.warn('⚠️ [Appointment] Doctor user not found for employee_id:', String(doctorId));
+        return;
+      }
+      await notificationDao.createForUser(String(doctorUser._id), {
+        type: 'appointment_created',
+        title: 'Lịch hẹn mới',
+        message: `Bạn có lịch hẹn mới với ${name} vào ${formattedDate}`,
+        related_id: appointment._id,
+        related_type: 'appointment'
+      });
+    })().catch((err) => console.error('❌ [Appointment] Error creating notification for doctor:', err)));
+  }
+
+  tasks.push(
+    notificationDao.createForRole('Receptionist', {
+      type: 'appointment_created',
+      title: 'Lịch hẹn mới',
+      message: `Có lịch hẹn mới của ${name} vào ${formattedDate}`,
+      related_id: appointment._id,
+      related_type: 'appointment'
+    }).catch((err) => console.error('❌ [Appointment] Error creating notifications for Receptionists:', err))
+  );
+
+  await Promise.all(tasks);
+}
 
 class AppointmentController {
   async create(req, res) {
@@ -25,127 +85,64 @@ class AppointmentController {
         data.status = 'Scheduled';
       }
 
+      const [patient, doctor] = await Promise.all([
+        Patient.findById(data.patient_id).select('fullname disabled').lean(),
+        findActiveEmployee(data.doctor_id),
+      ]);
+      if (!patient || patient.disabled) {
+        return res.status(400).json({ error: 'Bệnh nhân không tồn tại hoặc đã bị xóa' });
+      }
+      if (!doctor) {
+        return res.status(400).json({ error: 'Bác sĩ không tồn tại hoặc đã bị vô hiệu hóa' });
+      }
+
+      // Lịch đã hủy không chiếm khung giờ của bác sĩ
+      const occupiesSlot = data.status !== 'Cancelled';
+      if (occupiesSlot) {
+        const conflict = await dao.findDoctorConflict(data.doctor_id, data.appointment_date);
+        if (conflict) return res.status(409).json(conflictBody(conflict));
+      }
+
       const created = await dao.create(data);
+
+      // 2 request đặt cùng khung giờ chạy song song có thể cùng vượt qua bước kiểm tra trên.
+      // Kiểm tra lại sau khi ghi: bên nào thấy bên kia thì hủy bản của mình (luôn có ít nhất 1 bên thấy).
+      if (occupiesSlot) {
+        const raced = await dao.findDoctorConflict(data.doctor_id, data.appointment_date, created._id);
+        if (raced) {
+          await dao.hardDelete(created._id);
+          return res.status(409).json(conflictBody(raced));
+        }
+      }
+
       let result = created;
       try {
-        result = await dao.model
+        const populated = await dao.model
           .findById(created._id)
           .populate("patient_id", "fullname")
           .populate("doctor_id", "fullname position")
           .exec();
+        if (populated) result = populated;
       } catch (e) {
         console.warn("Could not populate appointment after create:", e.message || e);
       }
 
-      // Kế thừa
-      // Tạo thông báo cho Doctor khi có lịch hẹn mới
-      if (result.doctor_id) {
-        try {
-          let doctorId = result.doctor_id;
-          if (doctorId && typeof doctorId === 'object' && doctorId._id) {
-            doctorId = doctorId._id;
-          }
-          if (doctorId && typeof doctorId === 'object' && doctorId.toString) {
-            doctorId = doctorId.toString();
-          }
-          console.log('🔔 [Appointment] Creating notification for doctor_id:', doctorId);
-
-          const doctorUser = await UserDAO.findEmployAcc(doctorId);
-          console.log('🔔 [Appointment] Found doctor user:', doctorUser ? {
-            _id: doctorUser._id,
-            username: doctorUser.username,
-            role: doctorUser.role,
-            employee_id: doctorUser.employee_id
-          } : 'NOT FOUND');
-
-          if (doctorUser) {
-            // patient may already be populated
-            const patient = result.patient_id && result.patient_id.fullname
-              ? result.patient_id
-              : await Patient.findById(result.patient_id);
-            const patientName = patient ? patient.fullname : 'Bệnh nhân';
-            const appointmentDate = new Date(result.appointment_date);
-            const formattedDate = appointmentDate.toLocaleString('vi-VN', {
-              day: '2-digit',
-              month: '2-digit',
-              year: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit'
-            });
-
-            let doctorUserId = doctorUser._id;
-            if (doctorUserId && typeof doctorUserId === 'object' && doctorUserId.toString) {
-              doctorUserId = doctorUserId.toString();
-            }
-
-            const notificationData = {
-              type: 'appointment_created',
-              title: 'Lịch hẹn mới',
-              message: `Bạn có lịch hẹn mới với ${patientName} vào ${formattedDate}`,
-              related_id: result._id,
-              related_type: 'appointment'
-            };
-            console.log('🔔 [Appointment] Creating notification with data:', {
-              ...notificationData,
-              recipient_user_id: doctorUserId
-            });
-
-            const notification = await notificationDao.createForUser(doctorUserId, notificationData);
-            console.log('✅ [Appointment] Notification created successfully for doctor:', notification._id);
-          } else {
-            console.warn('⚠️ [Appointment] Doctor user not found for employee_id:', doctorId);
-          }
-        } catch (notifErr) {
-          console.error('❌ [Appointment] Error creating notification for appointment:', notifErr);
-          console.error('❌ [Appointment] Error details:', {
-            message: notifErr.message,
-            stack: notifErr.stack,
-            doctor_id: result.doctor_id
-          });
-        }
-      } else {
-        console.log('ℹ️ [Appointment] No doctor_id in appointment, skipping notification');
-      }
-
-      (async () => {
-        try {
-          const patientName = (result.patient_id && result.patient_id.fullname) ? result.patient_id.fullname : (await Patient.findById(result.patient_id)).fullname || 'Bệnh nhân';
-          const appointmentDate = new Date(result.appointment_date);
-          const formattedDate = appointmentDate.toLocaleString('vi-VN', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-          });
-
-          await notificationDao.createForRole('Receptionist', {
-            type: 'appointment_created',
-            title: 'Lịch hẹn mới',
-            message: `Có lịch hẹn mới của ${patientName} vào ${formattedDate}`,
-            related_id: result._id,
-            related_type: 'appointment'
-          });
-
-          console.log('✅ [Appointment] Notifications created for Receptionists');
-        } catch (roleNotifErr) {
-          console.error('❌ [Appointment] Error creating notifications for Receptionists:', roleNotifErr);
-        }
-      })();
+      await notifyAppointmentCreated(result, patient.fullname);
 
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
-    //
   };
 
   async findAll(req, res) {
     try {
-      const filter = {};
-      if (req.query.disabled !== undefined) {
-        filter.disabled = req.query.disabled === 'true';
+      // Mặc định chỉ trả lịch hẹn chưa xóa; xem lịch đã xóa (thùng rác) chỉ dành cho Admin
+      const showDeleted = req.query.disabled === 'true';
+      if (showDeleted && req.user?.role !== 'Admin') {
+        return res.status(403).json({ error: 'Chỉ Admin được xem lịch hẹn đã xóa' });
       }
+      const filter = { disabled: showDeleted };
       try {
         const result = await dao.model.find(filter)
           .populate('patient_id', 'fullname')
@@ -158,7 +155,7 @@ class AppointmentController {
         return res.json(result);
       }
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -168,7 +165,7 @@ class AppointmentController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -178,7 +175,7 @@ class AppointmentController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -192,17 +189,44 @@ class AppointmentController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
+      const data = pickFields(req.body, UPDATE_FIELDS);
+
+      // Đổi bác sĩ/giờ khám (hoặc mở lại lịch đã hủy) thì phải kiểm tra trùng lịch của bác sĩ
+      const mayConflict = data.doctor_id !== undefined || data.appointment_date !== undefined ||
+        (data.status !== undefined && data.status !== 'Cancelled');
+      if (mayConflict) {
+        const current = await dao.model.findById(req.params.id).exec();
+        if (!current) return res.status(404).json({ error: 'Appointment not found' });
+
+        const doctorChanged = data.doctor_id !== undefined && String(data.doctor_id) !== String(current.doctor_id);
+        const dateChanged = data.appointment_date !== undefined &&
+          new Date(data.appointment_date).getTime() !== new Date(current.appointment_date).getTime();
+        const status = data.status ?? current.status;
+        const reopened = current.status === 'Cancelled' && status !== 'Cancelled';
+
+        if (doctorChanged && !(await findActiveEmployee(data.doctor_id))) {
+          return res.status(400).json({ error: 'Bác sĩ không tồn tại hoặc đã bị vô hiệu hóa' });
+        }
+
+        const doctorId = data.doctor_id ?? current.doctor_id;
+        const date = data.appointment_date ?? current.appointment_date;
+        if ((doctorChanged || dateChanged || reopened) && status !== 'Cancelled' && !current.disabled && doctorId && date) {
+          const conflict = await dao.findDoctorConflict(doctorId, date, current._id);
+          if (conflict) return res.status(409).json(conflictBody(conflict));
+        }
+      }
+
+      const result = await dao.update(req.params.id, data);
       if (!result) return res.status(404).json({ error: 'Appointment not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -253,7 +277,7 @@ class AppointmentController {
       await AppointmentService.deleteCascade(req.params.id);
       res.json({ message: 'Appointment deleted with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
   //
@@ -263,7 +287,7 @@ class AppointmentController {
       await AppointmentService.restoreCascade(req.params.id);
       res.json({ message: 'Appointment restore with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

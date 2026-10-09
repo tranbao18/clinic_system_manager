@@ -21,8 +21,17 @@ import {
     deleteMedicalRecord,
     MedicalRecord
 } from "@/lib/services/medicalRecordService";
-import { UndoOutlined, ArrowLeftOutlined } from "@ant-design/icons";
+import { UndoOutlined, ArrowLeftOutlined, DeleteOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+
+// Tên từ document đã populate; null (thuốc/bác sĩ đã bị xóa) → "—"
+const refName = (ref: unknown, key = "fullname"): string => {
+    if (ref && typeof ref === "object") {
+        const value = (ref as Record<string, unknown>)[key];
+        if (typeof value === "string" && value.trim()) return value;
+    }
+    return "—";
+};
 
 const { Search } = Input;
 
@@ -31,7 +40,25 @@ export default function DisabledMedicalRecordsPage() {
     const [filteredMedicalRecords, setFilteredMedicalRecords] = useState<MedicalRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchText, setSearchText] = useState("");
+    const [role, setRole] = useState<string>("");
+    const [roleLoaded, setRoleLoaded] = useState(false);
+    const [restoringId, setRestoringId] = useState<string | null>(null);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
     const router = useRouter();
+    // Khôi phục và xóa vĩnh viễn chỉ dành cho Admin (backend cũng chặn)
+    const isAdmin = role === "admin";
+
+    useEffect(() => {
+        try {
+            const userData = sessionStorage.getItem("user") || localStorage.getItem("user");
+            const parsed = userData ? JSON.parse(userData) : null;
+            setRole(String(parsed?.role || "").toLowerCase());
+        } catch {
+            setRole("");
+        } finally {
+            setRoleLoaded(true);
+        }
+    }, []);
 
     // TỰ VIẾT
     const fetchMedicalRecords = async () => {
@@ -40,17 +67,22 @@ export default function DisabledMedicalRecordsPage() {
             const data = await getDisabledMedicalRecords();
             setMedicalRecords(data);
             setFilteredMedicalRecords(data);
-        } catch (error) {
+        } catch (error: any) {
             console.error("Fetch disabled medical records error:", error);
-            message.error("Không thể tải danh sách hồ sơ y tế đã xóa");
+            message.error(error?.message || "Không thể tải danh sách hồ sơ y tế đã xóa");
         } finally {
             setLoading(false);
         }
     };
 
     useEffect(() => {
+        if (!roleLoaded) return;
+        if (!isAdmin) {
+            setLoading(false);
+            return;
+        }
         fetchMedicalRecords();
-    }, []);
+    }, [roleLoaded, isAdmin]);
     // 
 
     const normalizeText = (str: string) =>
@@ -72,13 +104,9 @@ export default function DisabledMedicalRecordsPage() {
                 const diagnosisMatch = normalizeText(record.diagnosis || "").includes(search);
                 const treatmentMatch = normalizeText(record.treatment || "").includes(search);
                 const notesMatch = normalizeText(record.notes || "").includes(search);
-                const patientName = typeof record.patient_id === 'object' && record.patient_id
-                    ? normalizeText((record.patient_id as any).fullname || "")
-                    : "";
+                const patientName = normalizeText(refName(record.patient_id).replace("—", ""));
                 const patientMatch = patientName.includes(search);
-                const doctorName = typeof record.doctor_id === 'object' && record.doctor_id
-                    ? normalizeText(record.doctor_id.fullname || "")
-                    : "";
+                const doctorName = normalizeText(refName(record.doctor_id).replace("—", ""));
                 const doctorMatch = doctorName.includes(search);
                 return diagnosisMatch || treatmentMatch || notesMatch || patientMatch || doctorMatch;
             });
@@ -89,11 +117,27 @@ export default function DisabledMedicalRecordsPage() {
     // TỰ VIẾT
     const handleRestore = async (_id: string) => {
         try {
+            setRestoringId(_id);
             await restoreMedicalRecord(_id);
             message.success("Đã khôi phục hồ sơ y tế");
             fetchMedicalRecords();
-        } catch {
-            message.error("Khôi phục thất bại");
+        } catch (error: any) {
+            message.error(error?.message || "Khôi phục thất bại");
+        } finally {
+            setRestoringId(null);
+        }
+    };
+
+    const handlePermanentDelete = async (_id: string) => {
+        try {
+            setDeletingId(_id);
+            await deleteMedicalRecord(_id, true);
+            message.success("Đã xóa vĩnh viễn hồ sơ y tế");
+            fetchMedicalRecords();
+        } catch (error: any) {
+            message.error(error?.message || "Xóa vĩnh viễn thất bại");
+        } finally {
+            setDeletingId(null);
         }
     };
     // 
@@ -107,23 +151,13 @@ export default function DisabledMedicalRecordsPage() {
             title: "Bệnh nhân",
             key: "patient",
             width: 200,
-            render: (_, record) => {
-                const patient = typeof record.patient_id === 'object' && record.patient_id
-                    ? record.patient_id
-                    : null;
-                return patient ? (patient as any).fullname || "—" : "—";
-            },
+            render: (_, record) => refName(record.patient_id),
         },
         {
             title: "Bác sĩ",
             key: "doctor",
             width: 150,
-            render: (_, record) => {
-                const doctor = typeof record.doctor_id === 'object' && record.doctor_id
-                    ? record.doctor_id
-                    : null;
-                return doctor ? doctor.fullname || "—" : "—";
-            },
+            render: (_, record) => refName(record.doctor_id),
         },
         {
             title: "Chẩn đoán",
@@ -135,7 +169,7 @@ export default function DisabledMedicalRecordsPage() {
         {
             title: "Hành động",
             key: "action",
-            width: 150,
+            width: 260,
             render: (_, record) => (
                 <div className="flex gap-2">
                     <Popconfirm
@@ -144,8 +178,28 @@ export default function DisabledMedicalRecordsPage() {
                         okText="Khôi phục"
                         cancelText="Hủy"
                     >
-                        <Button type="primary" icon={<UndoOutlined />}>
+                        <Button
+                            type="primary"
+                            icon={<UndoOutlined />}
+                            loading={restoringId === record._id}
+                        >
                             Khôi phục
+                        </Button>
+                    </Popconfirm>
+                    <Popconfirm
+                        title="Xóa vĩnh viễn hồ sơ y tế này?"
+                        description="Hành động này không thể hoàn tác."
+                        onConfirm={() => handlePermanentDelete(record._id)}
+                        okText="Xóa vĩnh viễn"
+                        cancelText="Hủy"
+                        okButtonProps={{ danger: true }}
+                    >
+                        <Button
+                            danger
+                            icon={<DeleteOutlined />}
+                            loading={deletingId === record._id}
+                        >
+                            Xóa vĩnh viễn
                         </Button>
                     </Popconfirm>
                 </div>
@@ -179,7 +233,11 @@ export default function DisabledMedicalRecordsPage() {
                 />
             </Space>
 
-            {loading ? (
+            {roleLoaded && !isAdmin ? (
+                <div className="py-10 text-center text-gray-500">
+                    Chỉ Admin được xem và khôi phục hồ sơ y tế đã xóa.
+                </div>
+            ) : loading ? (
                 <div className="flex justify-center items-center py-10">
                     <Spin size="large" />
                 </div>
@@ -212,9 +270,7 @@ export default function DisabledMedicalRecordsPage() {
                                             <div className="space-y-1">
                                                 {record.prescriptions.map((p: any, idx: number) => (
                                                     <div key={idx} className="text-sm">
-                                                        • {typeof p.medicine_id === 'object'
-                                                            ? p.medicine_id.name
-                                                            : '—'} - Số lượng: {p.quantity} - Liều: {p.dosage}
+                                                        • {refName(p.medicine_id, "name")} - Số lượng: {p.quantity} - Liều: {p.dosage || "—"}
                                                     </div>
                                                 ))}
                                             </div>

@@ -1,4 +1,4 @@
-import { getAuthHeaderClient } from "@/lib/authHeaderClient";
+import { getAuthHeaderClient, handleAuthRedirect } from "@/lib/authHeaderClient";
 
 export interface Payment {
     _id: string;
@@ -29,96 +29,92 @@ export interface UpdatePaymentData {
     date?: string;
 }
 
+// Đọc body một lần; lỗi thì ném Error kèm thông báo backend (vd: vượt số tiền còn lại); 401 chuyển về đăng nhập
+async function parseResponse<T>(res: Response, fallback: string): Promise<T> {
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = null;
+    }
+    if (!res.ok) {
+        if (res.status === 401) handleAuthRedirect();
+        const body = (data && typeof data === "object" ? data : {}) as { error?: unknown; message?: unknown };
+        const msg =
+            (typeof body.error === "string" && body.error) ||
+            (typeof body.message === "string" && body.message) ||
+            fallback;
+        throw Object.assign(new Error(msg), { status: res.status, data });
+    }
+    return data as T;
+}
+
 export async function getPayments(filters?: {
     invoice_id?: string;
 }): Promise<Payment[]> {
-    try {
-        const authHeaders = await getAuthHeaderClient();
-        let url = "/api/payments";
-        const params = new URLSearchParams();
+    const params = new URLSearchParams();
+    if (filters?.invoice_id) params.append("invoice_id", filters.invoice_id);
+    const url = params.toString() ? `/api/payments?${params.toString()}` : "/api/payments";
 
-        if (filters?.invoice_id) params.append('invoice_id', filters.invoice_id);
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
-
-        const res = await fetch(url, {
-            cache: "no-store",
-            headers: authHeaders
-        });
-        if (!res.ok) throw new Error("Không thể lấy danh sách thanh toán");
-        return res.json();
-    } catch (error: any) {
-        console.error("getPayments error:", error);
-        return [];
-    }
+    const res = await fetch(url, {
+        cache: "no-store",
+        headers: getAuthHeaderClient(),
+    });
+    const data = await parseResponse<unknown>(res, "Không thể lấy danh sách thanh toán");
+    return Array.isArray(data) ? data : [];
 }
 
 export async function getPaymentById(id: string): Promise<Payment> {
-    const authHeaders = await getAuthHeaderClient();
     const res = await fetch(`/api/payments/${id}`, {
         cache: "no-store",
-        headers: authHeaders
+        headers: getAuthHeaderClient(),
     });
-    if (!res.ok) throw new Error("Không thể lấy thông tin thanh toán");
-    return res.json();
+    return parseResponse<Payment>(res, "Không thể lấy thông tin thanh toán");
 }
 
 export async function getPaymentsByInvoiceId(invoiceId: string): Promise<Payment[]> {
-    const authHeaders = await getAuthHeaderClient();
     const res = await fetch(`/api/payments/invoice/${invoiceId}`, {
         cache: "no-store",
-        headers: authHeaders
+        headers: getAuthHeaderClient(),
     });
-    if (!res.ok) throw new Error("Không thể lấy thanh toán của hóa đơn");
-    return res.json();
+    const data = await parseResponse<unknown>(res, "Không thể lấy thanh toán của hóa đơn");
+    return Array.isArray(data) ? data : [];
 }
 
 export async function createPayment(data: CreatePaymentData): Promise<Payment> {
-    const authHeaders = await getAuthHeaderClient();
     const res = await fetch("/api/payments", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            ...authHeaders
+            ...getAuthHeaderClient(),
         },
         body: JSON.stringify(data),
     });
-    if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || "Không thể tạo thanh toán");
-    }
-    return res.json();
+    return parseResponse<Payment>(res, "Không thể tạo thanh toán");
 }
 
 export async function updatePayment(
     id: string,
     data: UpdatePaymentData
 ): Promise<Payment> {
-    const authHeaders = await getAuthHeaderClient();
     const res = await fetch(`/api/payments/${id}`, {
         method: "PUT",
         headers: {
             "Content-Type": "application/json",
-            ...authHeaders
+            ...getAuthHeaderClient(),
         },
         body: JSON.stringify(data),
     });
-    if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || "Không thể cập nhật thanh toán");
-    }
-    return res.json();
+    return parseResponse<Payment>(res, "Không thể cập nhật thanh toán");
 }
 
 export async function deletePayment(id: string): Promise<void> {
-    const authHeaders = await getAuthHeaderClient();
     const res = await fetch(`/api/payments/${id}`, {
         method: "DELETE",
-        headers: authHeaders
+        headers: getAuthHeaderClient(),
     });
-    if (!res.ok) throw new Error("Không thể xóa thanh toán");
+    await parseResponse<unknown>(res, "Không thể xóa thanh toán");
 }
 
 export interface CreateVNPayUrlData {
@@ -133,53 +129,15 @@ export interface VNPayUrlResponse {
 }
 
 export async function createVNPayUrl(data: CreateVNPayUrlData): Promise<VNPayUrlResponse> {
-    try {
-        const authHeaders = await getAuthHeaderClient();
-        const res = await fetch("/api/payments/vnpay/create", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                ...authHeaders
-            },
-            body: JSON.stringify(data),
-        });
-
-        if (!res.ok) {
-            const text = await res.text();
-            let errorData;
-            try {
-                errorData = JSON.parse(text);
-            } catch {
-                errorData = { error: text || "Lỗi không xác định" };
-            }
-            console.error("❌ VNPay API error:", {
-                status: res.status,
-                statusText: res.statusText,
-                error: errorData
-            });
-
-            let errorMessage = "Không thể tạo URL thanh toán VNPay";
-            if (res.status === 403) {
-                errorMessage = errorData.error || "Bạn không có quyền thực hiện thao tác này. Vui lòng đăng nhập với tài khoản Admin hoặc Accountant.";
-            } else if (res.status === 401) {
-                errorMessage = errorData.error || "Bạn cần đăng nhập để thực hiện thao tác này.";
-            } else {
-                errorMessage = errorData.error || errorData.detail || errorMessage;
-            }
-
-            throw new Error(errorMessage);
-        }
-
-        const text = await res.text();
-        try {
-            return JSON.parse(text);
-        } catch {
-            throw new Error("Response không phải JSON hợp lệ");
-        }
-    } catch (error: any) {
-        console.error("createVNPayUrl error:", error);
-        throw error;
-    }
+    const res = await fetch("/api/payments/vnpay/create", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaderClient(),
+        },
+        body: JSON.stringify(data),
+    });
+    return parseResponse<VNPayUrlResponse>(res, "Không thể tạo URL thanh toán VNPay");
 }
 
 export interface CreateVNPayQRData {
@@ -195,52 +153,13 @@ export interface VNPayQRResponse {
 }
 
 export async function createVNPayQR(data: CreateVNPayQRData): Promise<VNPayQRResponse> {
-    try {
-        const authHeaders = await getAuthHeaderClient();
-        const res = await fetch("/api/payments/vnpay/create-qr", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                ...authHeaders
-            },
-            body: JSON.stringify(data),
-        });
-
-        if (!res.ok) {
-            const text = await res.text();
-            let errorData;
-            try {
-                errorData = JSON.parse(text);
-            } catch {
-                errorData = { error: text || "Lỗi không xác định" };
-            }
-            console.error("❌ VNPay QR API error:", {
-                status: res.status,
-                statusText: res.statusText,
-                error: errorData
-            });
-
-            let errorMessage = "Không thể tạo QR code VNPay";
-            if (res.status === 403) {
-                errorMessage = errorData.error || "Bạn không có quyền thực hiện thao tác này. Vui lòng đăng nhập với tài khoản Admin hoặc Accountant.";
-            } else if (res.status === 401) {
-                errorMessage = errorData.error || "Bạn cần đăng nhập để thực hiện thao tác này.";
-            } else {
-                errorMessage = errorData.error || errorData.detail || errorMessage;
-            }
-
-            throw new Error(errorMessage);
-        }
-
-        const text = await res.text();
-        try {
-            return JSON.parse(text);
-        } catch {
-            throw new Error("Response không phải JSON hợp lệ");
-        }
-    } catch (error: any) {
-        console.error("createVNPayQR error:", error);
-        throw error;
-    }
+    const res = await fetch("/api/payments/vnpay/create-qr", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaderClient(),
+        },
+        body: JSON.stringify(data),
+    });
+    return parseResponse<VNPayQRResponse>(res, "Không thể tạo QR code VNPay");
 }
-

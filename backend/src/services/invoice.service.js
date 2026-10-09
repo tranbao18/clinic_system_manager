@@ -36,6 +36,34 @@ class InvoiceService {
     }
   }
 
+  // Xóa vĩnh viễn hóa đơn + mọi khoản thanh toán của nó. Chỉ cho hóa đơn đã nằm trong thùng rác
+  // (kho đã được hoàn khi xóa mềm).
+  async hardDelete(invoiceId) {
+    const invoice = await InvoiceDAO.model.findById(invoiceId);
+    if (!invoice) throw httpError(404, 'Hóa đơn không tồn tại');
+    if (!invoice.disabled) {
+      throw httpError(400, 'Chỉ có thể xóa vĩnh viễn hóa đơn đã nằm trong thùng rác');
+    }
+
+    // Dữ liệu cũ chưa được hoàn kho khi xóa mềm -> hoàn trước (đánh dấu nguyên tử để chỉ hoàn 1 lần)
+    const claimed = await InvoiceDAO.model
+      .findOneAndUpdate(
+        { _id: invoiceId, disabled: true, stock_restored: { $ne: true } },
+        { $set: { stock_restored: true } }
+      )
+      .select('+stock_deductions');
+    if (claimed?.stock_deductions?.length) {
+      await releaseDeductions(claimed.stock_deductions);
+    }
+
+    // Điều kiện disabled: true -> không xóa nhầm nếu hóa đơn vừa được khôi phục
+    const { deletedCount } = await InvoiceDAO.model.deleteOne({ _id: invoiceId, disabled: true });
+    if (!deletedCount) throw httpError(409, 'Hóa đơn vừa được thay đổi, vui lòng tải lại và thử lại');
+
+    await PaymentDAO.model.deleteMany({ invoice_id: invoiceId });
+    return invoice;
+  }
+
   async restoreCascade(invoiceId) {
     try {
       const invoice = await InvoiceDAO.model.findById(invoiceId).select('+stock_deductions');
@@ -44,7 +72,8 @@ class InvoiceService {
 
       const restore = async () => {
         // Mỗi lịch hẹn chỉ có 1 hóa đơn đang hoạt động
-        const other = await InvoiceDAO.model.exists({
+        // (hóa đơn không gắn lịch hẹn thì bỏ qua: filter appointment_id: undefined sẽ khớp MỌI hóa đơn khác)
+        const other = invoice.appointment_id && await InvoiceDAO.model.exists({
           appointment_id: invoice.appointment_id,
           disabled: false,
           _id: { $ne: invoice._id }

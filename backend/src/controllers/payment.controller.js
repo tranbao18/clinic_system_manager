@@ -3,6 +3,8 @@ import Payment from '../models/payment.model.js';
 import PaymentService from '../services/payment.service.js';
 import pickFields from '../utils/pick-fields.js';
 
+import errorStatus from '../utils/error-status.js';
+// Không nhận vnp_txn_ref/vnp_transaction_no từ client: chỉ IPN VNPay (đã kiểm chữ ký) được ghi
 const CREATE_FIELDS = ['invoice_id', 'method', 'amount', 'date'];
 // Không cho chuyển payment sang hóa đơn khác hay tự đặt disabled
 const UPDATE_FIELDS = ['method', 'amount', 'date'];
@@ -22,7 +24,7 @@ class PaymentController {
       const result = await dao.findAll();
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -32,7 +34,7 @@ class PaymentController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 
@@ -45,7 +47,7 @@ class PaymentController {
       }).sort({ date: -1 });
       res.json(payments);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   }
 

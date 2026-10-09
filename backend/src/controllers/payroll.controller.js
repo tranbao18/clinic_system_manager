@@ -6,6 +6,7 @@ import PayrollImportService from '../services/payroll.service.js';
 import pickFields from '../utils/pick-fields.js';
 import { parseVNNumber, isBlankCell, MAX_IMPORT_ROWS } from '../utils/import-parse.js';
 
+import errorStatus from '../utils/error-status.js';
 const AMOUNT_FIELDS = ['basic_salary', 'bonus', 'deductions'];
 
 // net_salary = lương cơ bản + thưởng - khấu trừ, luôn tính ở server (không tin giá trị client gửi)
@@ -47,7 +48,7 @@ class PayrollController {
       const result = await dao.create(data);
       res.status(201).json(result);
     } catch (err) {
-      res.status(err.status || 500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -56,7 +57,7 @@ class PayrollController {
       const result = await dao.findAll();
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -66,7 +67,7 @@ class PayrollController {
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -123,7 +124,7 @@ class PayrollController {
         message: "Cập nhật lương thành công"
       });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
   //
@@ -133,7 +134,7 @@ class PayrollController {
       await dao.delete(req.params.id);
       res.json({ message: 'Deleted' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 
@@ -142,7 +143,7 @@ class PayrollController {
       await dao.restore(req.params.id);
       res.json({ message: 'Restored' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(errorStatus(err)).json({ error: err.message });
     }
   };
 

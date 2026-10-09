@@ -7,7 +7,7 @@ export default class EmployeeValidator {
       body('dob').isISO8601().toDate(),
       body('gender').isIn(['Male', 'Female']),
       body('phone').optional().isMobilePhone(),
-      body('email').optional().isEmail(),
+      body('email').optional({ values: 'falsy' }).isEmail(),
       body('position').isString().notEmpty().matches(/^[\p{L}\s.'-]{2,100}$/u),
       body('basic_salary').isFloat({ gt: 0 }).notEmpty(),
     ];
@@ -17,7 +17,7 @@ export default class EmployeeValidator {
     return [
       param('id').isMongoId(),
       body('phone').optional().isMobilePhone(),
-      body('email').optional().isEmail(),
+      body('email').optional({ values: 'falsy' }).isEmail(),
       body('position').optional().isString().matches(/^[\p{L}\s.'-]{2,100}$/u),
       body('basic_salary').optional().isFloat({ gt: 0 })
     ];

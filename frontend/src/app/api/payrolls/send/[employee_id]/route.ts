@@ -1,29 +1,17 @@
 // KẾ THỪA
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthHeaderServer } from "@/lib/authHeaderServer";
+import { NextRequest } from "next/server";
+import { proxyToBackend } from "@/lib/backendProxy";
 
-const API_URL = `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/payrolls`;
-
+// Lưu ý: endpoint này gửi bảng lương THÁNG HIỆN TẠI của nhân viên.
+// Giao diện dùng /api/payrolls/send/payroll/[id] để gửi đúng bảng lương được chọn.
 export async function POST(
-    req: NextRequest,
+    _req: NextRequest,
     { params }: { params: Promise<{ employee_id: string }> }
 ) {
     const { employee_id } = await params;
-    const authHeaders = await getAuthHeaderServer();
-    const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-    };
-
-    if (authHeaders.Authorization) {
-        headers.Authorization = authHeaders.Authorization;
-    }
-
-    const response = await fetch(`${API_URL}/send/${employee_id}`, {
+    return proxyToBackend({
+        path: `/api/payrolls/send/${encodeURIComponent(employee_id)}`,
         method: "POST",
-        headers,
+        errorMessage: "Không thể gửi email bảng lương",
     });
-
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
 }
-

@@ -6,6 +6,41 @@ const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL
     ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/schedules`
     : "https://meppod.onrender.com/api/schedules";
 
+// Đọc body đúng một lần (tránh lỗi "Body is unusable")
+async function readBody(res: Response): Promise<{ data: any; text: string }> {
+    const text = await res.text();
+    try {
+        return { data: text ? JSON.parse(text) : null, text };
+    } catch {
+        return { data: null, text };
+    }
+}
+
+// Giữ nguyên status và thông điệp lỗi của backend
+function backendError(status: number, data: any, text: string, fallback: string) {
+    const body = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    return NextResponse.json(
+        {
+            ...body,
+            error: body.error || body.message || fallback,
+            ...(data === null && text ? { detail: text.slice(0, 500) } : {}),
+        },
+        { status }
+    );
+}
+
+function exceptionResponse(err: unknown) {
+    const error = err instanceof Error ? err : { message: "Lỗi hệ thống", code: "" };
+    const message = error.message || "Lỗi hệ thống";
+    if ((error as any).code === 'ECONNREFUSED' || message.includes('fetch failed')) {
+        return NextResponse.json(
+            { error: "Không thể kết nối đến server backend. Vui lòng kiểm tra xem backend đã chạy chưa." },
+            { status: 503 }
+        );
+    }
+    return NextResponse.json({ error: message }, { status: 500 });
+}
+
 export async function GET(
     req: NextRequest,
     { params }: { params: Promise<{ employee_id: string }> }
@@ -24,28 +59,16 @@ export async function GET(
             headers,
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error("External API (GET schedule) error:", res.status, text);
-            return NextResponse.json(
-                { error: "Không thể lấy lịch trực", detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không thể lấy lịch trực");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? {});
     } catch (err: unknown) {
         console.error("GET /api/schedules/[employee_id] exception:", err);
-        const error = err instanceof Error ? err : { message: "Lỗi hệ thống", code: "" };
-        const message = error.message || "Lỗi hệ thống";
-        if ((error as any).code === 'ECONNREFUSED' || message.includes('fetch failed')) {
-            return NextResponse.json(
-                { error: "Không thể kết nối đến server backend. Vui lòng kiểm tra xem backend đã chạy chưa." },
-                { status: 503 }
-            );
-        }
-        return NextResponse.json({ error: message }, { status: 500 });
+        return exceptionResponse(err);
     }
 }
 
@@ -73,28 +96,16 @@ export async function PUT(
             cache: "no-store",
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error("External API (PUT schedules) error:", res.status, text);
-            return NextResponse.json(
-                { error: "Không thể cập nhật lịch trực", detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không thể cập nhật lịch trực");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? {});
     } catch (err: unknown) {
         console.error("PUT /api/schedules/[employee_id] exception:", err);
-        const error = err instanceof Error ? err : { message: "Lỗi hệ thống", code: "" };
-        const message = error.message || "Lỗi hệ thống";
-        if ((error as any).code === 'ECONNREFUSED' || message.includes('fetch failed')) {
-            return NextResponse.json(
-                { error: "Không thể kết nối đến server backend. Vui lòng kiểm tra xem backend đã chạy chưa." },
-                { status: 503 }
-            );
-        }
-        return NextResponse.json({ error: message }, { status: 500 });
+        return exceptionResponse(err);
     }
 }
 
@@ -117,27 +128,15 @@ export async function DELETE(
             cache: "no-store",
         });
 
+        const { data, text } = await readBody(res);
         if (!res.ok) {
-            const text = await res.text();
             console.error("External API (DELETE schedules) error:", res.status, text);
-            return NextResponse.json(
-                { error: "Không thể xóa lịch trực", detail: text },
-                { status: res.status }
-            );
+            return backendError(res.status, data, text, "Không thể xóa lịch trực");
         }
 
-        const data = await res.json();
-        return NextResponse.json(data);
+        return NextResponse.json(data ?? { message: "Đã xóa lịch trực" });
     } catch (err: unknown) {
         console.error("DELETE /api/schedules/[employee_id] exception:", err);
-        const error = err instanceof Error ? err : { message: "Lỗi hệ thống", code: "" };
-        const message = error.message || "Lỗi hệ thống";
-        if ((error as any).code === 'ECONNREFUSED' || message.includes('fetch failed')) {
-            return NextResponse.json(
-                { error: "Không thể kết nối đến server backend. Vui lòng kiểm tra xem backend đã chạy chưa." },
-                { status: 503 }
-            );
-        }
-        return NextResponse.json({ error: message }, { status: 500 });
+        return exceptionResponse(err);
     }
 }
