@@ -1,10 +1,14 @@
 import dao from '../dao/employee.dao.js';
 import EmployeeService from '../services/employee.service.js';
+import pickFields from '../utils/pick-fields.js';
+
+// shift_schedule do module lịch làm việc quản lý riêng
+const FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'position', 'specialization', 'basic_salary'];
 
 class EmployeeController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const result = await dao.create(pickFields(req.body, FIELDS));
       res.status(201).json(result);
     } catch (err) {
       // Xử lý lỗi duplicate key (email đã tồn tại)
@@ -21,7 +25,12 @@ class EmployeeController {
       if (req.query.disabled !== undefined) {
         filter.disabled = req.query.disabled === 'true';
       }
-      const result = await dao.findAll(filter);
+      if (filter.disabled === undefined) filter.disabled = false;
+      // Chỉ Admin/Kế toán được thấy lương cơ bản
+      const canSeeSalary = ['Admin', 'Accountant'].includes(req.user?.role);
+      const query = dao.model.find(filter);
+      if (!canSeeSalary) query.select('-basic_salary');
+      const result = await query;
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -40,7 +49,8 @@ class EmployeeController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const result = await dao.update(req.params.id, pickFields(req.body, FIELDS));
+      if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
       // Xử lý lỗi duplicate key (email đã tồn tại)

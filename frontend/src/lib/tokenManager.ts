@@ -51,7 +51,7 @@ export async function checkServerStatus(): Promise<boolean> {
 export async function validateToken(token: string): Promise<boolean> {
     try {
         const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "https://meppod.onrender.com";
-        const res = await fetch(`${backendUrl}/api/auth/account/validate`, {
+        const res = await fetch(`${backendUrl}/api/auth/validate`, {
             method: "GET",
             headers: {
                 Authorization: `Bearer ${token}`,

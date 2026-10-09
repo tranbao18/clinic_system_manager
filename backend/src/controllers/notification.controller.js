@@ -1,9 +1,12 @@
 import dao from '../dao/notification.dao.js';
+import pickFields from '../utils/pick-fields.js';
+
+const CREATE_FIELDS = ['recipient_id', 'recipient_role', 'type', 'title', 'message', 'related_id', 'related_type'];
 
 class NotificationController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const result = await dao.create(pickFields(req.body, CREATE_FIELDS));
       res.status(201).json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -113,6 +116,15 @@ class NotificationController {
 
   async remove(req, res) {
     try {
+      // Chỉ người nhận (hoặc Admin) được xóa thông báo
+      const notification = await dao.findById(req.params.id);
+      if (!notification) {
+        return res.status(404).json({ message: 'Not found' });
+      }
+      const userId = req.user.sub || req.user.userId || req.user._id;
+      if (req.user.role !== 'Admin' && String(notification.recipient_id) !== String(userId)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
       await dao.delete(req.params.id);
       res.json({ message: 'Deleted' });
     } catch (err) {

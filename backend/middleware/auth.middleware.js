@@ -20,12 +20,18 @@ const authMiddleware = (roles = []) => {
 
       // Đọc lại user từ DB: tài khoản bị vô hiệu hóa/xóa sẽ mất quyền ngay,
       // và đổi role có hiệu lực ngay thay vì chờ token hết hạn
-      const user = payload.sub ? await User.findById(payload.sub).select('role disabled').lean() : null;
+      const user = payload.sub ? await User.findById(payload.sub).select('role disabled employee_id patient_id').lean() : null;
       if (!user || user.disabled) {
         return res.status(401).json({ message: 'Tài khoản không còn hiệu lực' });
       }
 
-      req.user = { ...payload, role: user.role };
+      // employee_id/patient_id dùng để kiểm tra quyền sở hữu (bác sĩ chỉ sửa hồ sơ của mình, bệnh nhân chỉ xem lịch của mình)
+      req.user = {
+        ...payload,
+        role: user.role,
+        employee_id: user.employee_id ? String(user.employee_id) : undefined,
+        patient_id: user.patient_id ? String(user.patient_id) : undefined,
+      };
       if (roles.length && !roles.includes(user.role)) {
         console.log('❌ Access denied:', {
           userRole: user.role,

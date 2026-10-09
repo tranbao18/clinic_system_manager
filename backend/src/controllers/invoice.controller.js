@@ -4,7 +4,18 @@ import dao from '../dao/invoice.dao.js';
 import medicalRecordDao from '../dao/medical-record.dao.js';
 import notificationDao from '../dao/notification.dao.js';
 import MedicineImport from '../models/medicine-import.model.js';
+import Payment from '../models/payment.model.js';
 import InvoiceService from '../services/invoice.service.js';
+import pickFields from '../utils/pick-fields.js';
+
+// Trạng thái hóa đơn luôn suy ra từ tổng tiền đã thanh toán, không tin giá trị client gửi
+async function computeInvoiceStatus(invoiceId, totalAmount) {
+  const payments = await Payment.find({ invoice_id: invoiceId, disabled: false });
+  const totalPaid = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  if (totalPaid >= totalAmount) return 'Paid';
+  if (totalPaid > 0) return 'Partial';
+  return 'Unpaid';
+}
 
 // Kế thừa
 /**
@@ -144,7 +155,8 @@ class InvoiceController {
 
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      // Hóa đơn mới luôn ở trạng thái Unpaid; không nhận status/disabled từ client
+      const result = await dao.create(pickFields(req.body, ['patient_id', 'appointment_id', 'total_amount']));
       res.status(201).json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -304,7 +316,22 @@ class InvoiceController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const invoice = await dao.model.findById(req.params.id);
+      if (!invoice) return res.status(404).json({ message: 'Not found' });
+
+      // Chỉ cho sửa tổng tiền; status được tính lại từ các khoản thanh toán
+      const data = {};
+      if (req.body?.total_amount !== undefined) {
+        const total = Number(req.body.total_amount);
+        if (!Number.isFinite(total) || total < 0) {
+          return res.status(400).json({ error: 'Tổng tiền không hợp lệ' });
+        }
+        data.total_amount = total;
+      }
+      data.status = await computeInvoiceStatus(invoice._id, data.total_amount ?? invoice.total_amount);
+      data.updated_at = new Date();
+
+      const result = await dao.update(req.params.id, data);
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });

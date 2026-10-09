@@ -4,11 +4,14 @@ import { parse } from 'csv-parse/sync';
 import dao from '../dao/medicine.dao.js';
 import MedicineImport from '../models/medicine-import.model.js';
 import MedicineService from '../services/medicine.service.js';
+import pickFields from '../utils/pick-fields.js';
+
+const FIELDS = ['name', 'category', 'unit', 'price'];
 
 class MedicineController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const result = await dao.create(pickFields(req.body, FIELDS));
       res.status(201).json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -71,7 +74,7 @@ class MedicineController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const result = await dao.update(req.params.id, pickFields(req.body, FIELDS));
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });

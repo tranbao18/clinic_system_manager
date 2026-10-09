@@ -1,10 +1,14 @@
 import dao from '../dao/patient.dao.js';
 import PatientService from '../services/patient.service.js';
+import pickFields from '../utils/pick-fields.js';
+
+// Frontend gửi cả document (có _id, disabled, __v...) khi sửa: chỉ giữ các field thông tin
+const FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'medical_history'];
 
 class PatientController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const result = await dao.create(pickFields(req.body, FIELDS));
       res.status(201).json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -36,7 +40,8 @@ class PatientController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const result = await dao.update(req.params.id, pickFields(req.body, FIELDS));
+      if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });

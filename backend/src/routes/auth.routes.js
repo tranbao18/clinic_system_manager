@@ -13,6 +13,7 @@ router.post('/login-patient', authCtrl.loginPatient);
 
 router.post('/logout', auth(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist']), authCtrl.logout);
 router.post('/forgot-password', authCtrl.forgotPassword);
+router.get('/reset-password/confirm', authCtrl.confirmPasswordReset);
 router.get('/validate', auth(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist']), authCtrl.validateToken);
 
 router.get('/account/:id', auth(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist']), authCtrl.getAccount);

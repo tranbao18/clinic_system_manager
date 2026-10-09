@@ -1,12 +1,17 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
+import crypto from "crypto";
 
 import User from "../models/user.model.js";
 import TokenBlacklist from "../models/token-blacklist.model.js";
 import BaseDAO from './base.dao.js';
 
 let usersModel = null;
+
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000; // link đặt lại mật khẩu có hạn 30 phút
+const hashResetToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
+const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // Kế thừa
 function getEnvValue(key, defaultValue = null) {
@@ -423,23 +428,82 @@ class UserDAO extends BaseDAO {
     }
   }
 
-  async forgotPassword(username, email) {
+  // Bước 1: gửi link xác nhận (KHÔNG đổi mật khẩu ngay).
+  // Luôn trả cùng một thông báo để không lộ username/email nào tồn tại.
+  async forgotPassword(username, email, confirmBaseUrl) {
     if (!usersModel) throw new Error("Users DAO has not been initialized. Call injectDB(conn) first.");
 
-    // Tìm user theo username và populate employee info
+    const genericResult = {
+      message: "Nếu thông tin chính xác, email hướng dẫn đặt lại mật khẩu đã được gửi.",
+    };
+
     const user = await usersModel.findOne({ username: String(username) }).populate("employee_id").exec();
-    if (!user || user.disabled) throw new Error("Username không tồn tại");
+    const employeeEmail = user?.employee_id?.email;
+    const matches =
+      user && !user.disabled && employeeEmail &&
+      employeeEmail.trim().toLowerCase() === String(email).trim().toLowerCase();
+    if (!matches) return genericResult;
 
-    // Kiểm tra email
-    if (!user.employee_id || !user.employee_id.email) {
-      throw new Error("Tài khoản này không có thông tin email");
-    }
-    if (user.employee_id.email !== email) {
-      throw new Error("Email không khớp với username");
-    }
+    const token = crypto.randomBytes(32).toString("hex");
+    await usersModel.updateOne(
+      { _id: user._id },
+      {
+        reset_token_hash: hashResetToken(token),
+        reset_token_expires: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+      }
+    );
 
-    // Reset password và gửi email
+    const link = `${confirmBaseUrl}/api/auth/reset-password/confirm?token=${token}`;
+    try {
+      await this.sendResetLinkEmail(employeeEmail, user.username, link, user.employee_id.fullname || "");
+    } catch (err) {
+      // Không trả chi tiết lỗi SMTP về client
+      console.error("❌ Không gửi được email đặt lại mật khẩu:", err.message || err);
+    }
+    return genericResult;
+  }
+
+  // Bước 2: người dùng bấm link trong email -> token dùng 1 lần, còn hạn -> cấp mật khẩu mới qua email
+  async confirmPasswordReset(token) {
+    if (!usersModel) throw new Error("Users DAO has not been initialized. Call injectDB(conn) first.");
+    if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) return null;
+
+    const user = await usersModel.findOneAndUpdate(
+      {
+        reset_token_hash: hashResetToken(token),
+        reset_token_expires: { $gt: new Date() },
+        disabled: { $ne: true },
+      },
+      { $unset: { reset_token_hash: 1, reset_token_expires: 1 } }
+    ).exec();
+    if (!user) return null;
+
     return await this.resetPassword(user._id);
+  }
+
+  async sendResetLinkEmail(toEmail, username, link, employeeName = "") {
+    const transporter = createTransporter();
+    const fromEmail = getEnvValue('FROM_EMAIL') || getEnvValue('SMTP_USER');
+    const minutes = Math.round(RESET_TOKEN_TTL_MS / 60000);
+    return transporter.sendMail({
+      from: fromEmail,
+      to: toEmail,
+      subject: "Xác nhận đặt lại mật khẩu",
+      text: `Xin chào ${employeeName},
+
+Có yêu cầu đặt lại mật khẩu cho tài khoản ${username}.
+Bấm vào link sau trong vòng ${minutes} phút để nhận mật khẩu mới qua email:
+${link}
+
+Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu hiện tại vẫn giữ nguyên.`,
+      html: `
+      <p>Xin chào ${escapeHtml(employeeName)},</p>
+      <p>Có yêu cầu đặt lại mật khẩu cho tài khoản <strong>${escapeHtml(username)}</strong>.</p>
+      <p>Bấm vào link sau trong vòng ${minutes} phút để nhận mật khẩu mới qua email:</p>
+      <p><a href="${link}">Xác nhận đặt lại mật khẩu</a></p>
+      <p><em>Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu hiện tại vẫn giữ nguyên.</em></p>
+    `,
+    });
   }
 }
 

@@ -3,14 +3,37 @@ import { parse } from 'csv-parse/sync';
 
 import dao from '../dao/payroll.dao.js';
 import PayrollImportService from '../services/payroll.service.js';
+import pickFields from '../utils/pick-fields.js';
+
+const AMOUNT_FIELDS = ['basic_salary', 'bonus', 'deductions'];
+
+// net_salary = lương cơ bản + thưởng - khấu trừ, luôn tính ở server (không tin giá trị client gửi)
+function buildPayrollAmounts(input, current = {}) {
+  const amounts = {};
+  for (const key of AMOUNT_FIELDS) {
+    const raw = input[key] !== undefined ? input[key] : current[key];
+    const value = raw === undefined || raw === null || raw === '' ? 0 : Number(raw);
+    if (!Number.isFinite(value) || value < 0) {
+      throw Object.assign(new Error(`Giá trị ${key} không hợp lệ`), { status: 400 });
+    }
+    amounts[key] = value;
+  }
+  amounts.net_salary = amounts.basic_salary + amounts.bonus - amounts.deductions;
+  if (amounts.net_salary < 0) {
+    throw Object.assign(new Error('Lương thực nhận không được âm'), { status: 400 });
+  }
+  return amounts;
+}
 
 class PayrollController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const data = pickFields(req.body, ['employee_id', 'paydate', ...AMOUNT_FIELDS]);
+      Object.assign(data, buildPayrollAmounts(data));
+      const result = await dao.create(data);
       res.status(201).json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(err.status || 500).json({ error: err.message });
     }
   };
 
@@ -39,8 +62,18 @@ class PayrollController {
       const { id } = req.params;
       const { sendEmail } = req.query;
 
-      // Cập nhật payroll
-      const result = await dao.update(id, req.body);
+      // Cập nhật payroll: chỉ nhận các khoản tiền + ngày trả, net_salary tính lại ở server.
+      // Không cho đổi employee_id/emailSent/disabled qua API này.
+      const current = await dao.findById(id);
+      if (!current) return res.status(404).json({ message: 'Not found' });
+      const data = pickFields(req.body, ['paydate', ...AMOUNT_FIELDS]);
+      let amounts;
+      try {
+        amounts = buildPayrollAmounts(data, current);
+      } catch (e) {
+        return res.status(e.status || 400).json({ error: e.message });
+      }
+      const result = await dao.update(id, { ...data, ...amounts, updated_at: new Date() });
 
       // Tự động gửi email nếu sendEmail=true (mặc định là true)
       const shouldSendEmail = sendEmail !== 'false';

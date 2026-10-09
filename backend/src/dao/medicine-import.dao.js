@@ -76,7 +76,7 @@ class MedicineImportDAO extends BaseDAO {
   }
 
   async update(id, data) {
-    const result = await this.model.findByIdAndUpdate(id, data, { new: true });
+    const result = await this.model.findByIdAndUpdate(id, data, { new: true, runValidators: true });
     if (result) {
       const populated = await this.model.findById(result._id)
         .populate({

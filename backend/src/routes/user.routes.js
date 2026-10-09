@@ -11,7 +11,8 @@ router.post('/', auth("Admin"), validator.createUser(), validate, ctrl.create);
 router.get('/', auth("Admin"), ctrl.findAll);
 router.get('/:id', auth("Admin"), ctrl.findById);
 
-router.patch('/changepass/:id', auth("Admin"), ctrl.changepass);
+// Mọi nhân viên được đổi mật khẩu của chính mình (controller kiểm tra quyền sở hữu)
+router.patch('/changepass/:id', auth(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist']), ctrl.changepass);
 router.put('/:id', auth("Admin"), validator.updateUser(), validate, ctrl.update);
 router.delete('/:id', auth("Admin"), ctrl.remove);
 router.put('/:id/restore', auth("Admin"), ctrl.restore);

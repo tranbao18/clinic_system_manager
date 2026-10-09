@@ -1,9 +1,13 @@
 import dao from '../dao/purchase-transaction.dao.js';
+import pickFields from '../utils/pick-fields.js';
+
+const CREATE_FIELDS = ['import_id', 'payment_method', 'amount', 'date', 'accountant_id'];
+const UPDATE_FIELDS = ['payment_method', 'amount', 'date'];
 
 class PurchaseTransactionController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const result = await dao.create(pickFields(req.body, CREATE_FIELDS));
       res.status(201).json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -31,7 +35,7 @@ class PurchaseTransactionController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const result = await dao.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });

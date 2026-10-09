@@ -4,11 +4,28 @@ import notificationDao from '../dao/notification.dao.js';
 import UserDAO from '../dao/user.dao.js';
 import Patient from '../models/patient.model.js';
 import AppointmentService from '../services/appointment.service.js';
+import MedicalRecordDAO from '../dao/medical-record.dao.js';
+import InvoiceDAO from '../dao/invoice.dao.js';
+import pickFields from '../utils/pick-fields.js';
+
+const CREATE_FIELDS = ['patient_id', 'doctor_id', 'appointment_date', 'status', 'reason'];
+const UPDATE_FIELDS = ['doctor_id', 'appointment_date', 'status', 'reason'];
 
 class AppointmentController {
   async create(req, res) {
     try {
-      const created = await dao.create(req.body);
+      const data = pickFields(req.body, CREATE_FIELDS);
+
+      // Bệnh nhân chỉ được đặt lịch cho chính mình, trạng thái luôn là Scheduled
+      if (req.user?.role === 'Patient') {
+        if (!req.user.patient_id) {
+          return res.status(403).json({ error: 'Tài khoản chưa liên kết hồ sơ bệnh nhân' });
+        }
+        data.patient_id = req.user.patient_id;
+        data.status = 'Scheduled';
+      }
+
+      const created = await dao.create(data);
       let result = created;
       try {
         result = await dao.model
@@ -167,6 +184,10 @@ class AppointmentController {
 
   async findByPatientId(req, res) {
     try {
+      // Bệnh nhân chỉ xem được lịch hẹn của chính mình
+      if (req.user?.role === 'Patient' && String(req.user.patient_id) !== String(req.params.id)) {
+        return res.status(403).json({ error: 'Không có quyền xem lịch hẹn của bệnh nhân khác' });
+      }
       const result = await dao.findPatientAppoint(req.params.id);
       if (!result) return res.status(404).json({ message: 'Not found' });
       res.json(result);
@@ -177,7 +198,8 @@ class AppointmentController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const result = await dao.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
+      if (!result) return res.status(404).json({ error: 'Appointment not found' });
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -187,7 +209,9 @@ class AppointmentController {
   // Kế thừa
   async remove(req, res) {
     try {
-      const hard = req.query && req.query.hard === 'true';
+      const isAdmin = req.user?.role === 'Admin';
+      // Chỉ Admin được xóa vĩnh viễn; vai trò khác gửi hard=true sẽ được xóa mềm
+      const hard = isAdmin && req.query && req.query.hard === 'true';
 
       const appointmentRaw = await dao.model.findById(req.params.id).exec();
       if (!appointmentRaw) {
@@ -195,8 +219,16 @@ class AppointmentController {
       }
 
       if (hard) {
+        // Không xóa vĩnh viễn lịch hẹn đã có bệnh án/hóa đơn (kể cả đã xóa mềm) để tránh dữ liệu mồ côi
+        const [hasRecord, hasInvoice] = await Promise.all([
+          MedicalRecordDAO.model.exists({ appointment_id: appointmentRaw._id }),
+          InvoiceDAO.model.exists({ appointment_id: appointmentRaw._id }),
+        ]);
+        if (hasRecord || hasInvoice) {
+          return res.status(400).json({ error: 'Lịch hẹn đã có bệnh án hoặc hóa đơn, không thể xóa vĩnh viễn' });
+        }
         await dao.hardDelete(req.params.id);
-        return res.json({ message: 'Appointment hard deleted with cascade (permanent)' });
+        return res.json({ message: 'Appointment hard deleted (permanent)' });
       }
 
       if (appointmentRaw.disabled) {
@@ -205,6 +237,17 @@ class AppointmentController {
 
       if (appointmentRaw.status === 'Completed') {
         return res.status(400).json({ error: 'Completed appointment cannot be deleted' });
+      }
+
+      // Người không phải Admin không được xóa lịch hẹn đã có bệnh án/hóa đơn đang hoạt động
+      if (!isAdmin) {
+        const [hasRecord, hasInvoice] = await Promise.all([
+          MedicalRecordDAO.model.exists({ appointment_id: appointmentRaw._id, disabled: false }),
+          InvoiceDAO.model.exists({ appointment_id: appointmentRaw._id, disabled: false }),
+        ]);
+        if (hasRecord || hasInvoice) {
+          return res.status(400).json({ error: 'Lịch hẹn đã có bệnh án hoặc hóa đơn, chỉ Admin được xóa' });
+        }
       }
 
       await AppointmentService.deleteCascade(req.params.id);

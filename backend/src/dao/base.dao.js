@@ -30,7 +30,8 @@ export default class BaseDAO {
   }
 
   async update(id, data) {
-    return await this.model.findByIdAndUpdate(id, data, { new: true });
+    // runValidators: áp dụng enum/required của schema cho cả lệnh update
+    return await this.model.findByIdAndUpdate(id, data, { new: true, runValidators: true });
   }
 
   async findById(id, session = null) {

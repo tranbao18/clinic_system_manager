@@ -14,7 +14,7 @@ export async function GET(req: Request) {
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "https://meppod.onrender.com";
 
-    const validateRes = await fetch(`${backendUrl}/api/auth/account/dummy`, {
+    const validateRes = await fetch(`${backendUrl}/api/auth/validate`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -29,7 +29,7 @@ export async function GET(req: Request) {
       );
     }
 
-    const isValid = validateRes.status !== 401 && validateRes.status !== 403;
+    const isValid = validateRes.ok;
 
     return NextResponse.json({ valid: isValid });
   } catch (error) {

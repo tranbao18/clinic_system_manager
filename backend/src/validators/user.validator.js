@@ -7,7 +7,7 @@ export default class UserValidator {
       body('password').optional().isString(),
       body('role')
         .optional()
-        .isIn(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant']),
+        .isIn(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist']),
       body('employee_id').optional().isMongoId(),
       body('patient_id').optional().isMongoId()
     ];
@@ -18,7 +18,7 @@ export default class UserValidator {
       param('id').isMongoId(),
       body('role')
         .optional()
-        .isIn(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant']),
+        .isIn(['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist']),
       body('employee_id').optional().isMongoId(),
       body('patient_id').optional().isMongoId()
     ];

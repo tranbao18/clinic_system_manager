@@ -5,11 +5,17 @@ import dao from '../dao/medicine-import.dao.js';
 import Medicine from '../models/medicine.model.js';
 import Employee from '../models/employee.model.js';
 import MedicineImportService from '../services/medicine-import.service.js';
+import pickFields from '../utils/pick-fields.js';
+
+// remaining luôn = quantity khi tạo (DAO tự gán); không cho client tự đặt tồn kho
+const CREATE_FIELDS = ['medicine_id', 'supplier', 'batchcode', 'quantity', 'unit_price', 'expiry_date', 'import_date', 'imported_by'];
+// Không cho sửa quantity/remaining/medicine_id qua PUT (điều chỉnh tồn kho dùng chức năng cập nhật số lượng)
+const UPDATE_FIELDS = ['supplier', 'batchcode', 'unit_price', 'expiry_date', 'import_date'];
 
 class MedicineImportController {
   async create(req, res) {
     try {
-      const result = await dao.create(req.body);
+      const result = await dao.create(pickFields(req.body, CREATE_FIELDS));
       res.status(201).json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -41,7 +47,7 @@ class MedicineImportController {
 
   async update(req, res) {
     try {
-      const result = await dao.update(req.params.id, req.body);
+      const result = await dao.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });

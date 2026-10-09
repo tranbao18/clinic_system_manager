@@ -4,7 +4,11 @@ import UserDAO from '../dao/user.dao.js';
 import EmployeeDAO from '../dao/employee.dao.js';
 import PatientDAO from '../dao/patient.dao.js';
 
+import pickFields from '../utils/pick-fields.js';
+
 const STAFF_ROLES = ['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist'];
+const EMPLOYEE_FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'position', 'specialization', 'basic_salary'];
+const PATIENT_FIELDS = ['fullname', 'dob', 'gender', 'phone', 'address', 'email', 'medical_history'];
 
 // Chặn NoSQL injection: chỉ chấp nhận chuỗi không rỗng (vd: không cho {"$ne": null})
 const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== '';
@@ -21,7 +25,7 @@ class AuthController {
         return res.status(400).json({ error: 'Thiếu thông tin nhân viên' });
       }
 
-      const createdEmployee = await EmployeeDAO.createEmployee(employee);
+      const createdEmployee = await EmployeeDAO.createEmployee(pickFields(employee, EMPLOYEE_FIELDS));
 
       const createdUser = await UserDAO.register(role, createdEmployee);
 
@@ -79,15 +83,45 @@ class AuthController {
         return res.status(400).json({ error: 'Username và email là bắt buộc' });
       }
 
-      const result = await UserDAO.forgotPassword(username, email);
+      // URL công khai của backend để tạo link xác nhận trong email
+      const confirmBaseUrl = (process.env.BACKEND_PUBLIC_URL ||
+        `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+
+      const result = await UserDAO.forgotPassword(username, email, confirmBaseUrl);
 
       return res.status(200).json({
         message: 'Yêu cầu khôi phục mật khẩu đã được xử lý thành công',
         details: result.message
       });
     } catch (err) {
-      console.error('AuthController.forgotPassword error:', err);
-      return res.status(400).json({ error: err.message });
+      console.error('AuthController.forgotPassword error:', err.message);
+      return res.status(500).json({ error: 'Không thể xử lý yêu cầu, vui lòng thử lại sau' });
+    }
+  };
+
+  // Link trong email quên mật khẩu trỏ vào đây (mở bằng trình duyệt) -> trả trang HTML đơn giản
+  async confirmPasswordReset(req, res) {
+    const loginUrl = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
+    const page = (title, body) => `<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:520px;margin:48px auto;padding:0 16px;line-height:1.6">
+<h2>${title}</h2>${body}${loginUrl ? `<p><a href="${loginUrl}/auth/login">Về trang đăng nhập</a></p>` : ''}</body></html>`;
+
+    try {
+      const result = await UserDAO.confirmPasswordReset(req.query.token);
+      res.set('Cache-Control', 'no-store').type('html');
+      if (!result) {
+        return res.status(400).send(page('Liên kết không hợp lệ', '<p>Liên kết đã hết hạn hoặc đã được sử dụng. Vui lòng gửi lại yêu cầu quên mật khẩu.</p>'));
+      }
+      if (result.password) {
+        // Không gửi được email mật khẩu mới: hiển thị cho người giữ link (đã chứng minh sở hữu email)
+        const safe = String(result.password).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+        return res.send(page('Đã đặt lại mật khẩu', `<p>Không gửi được email. Mật khẩu mới của bạn là: <strong>${safe}</strong></p><p>Hãy đổi mật khẩu ngay sau khi đăng nhập.</p>`));
+      }
+      return res.send(page('Đã đặt lại mật khẩu', '<p>Mật khẩu mới đã được gửi tới email của bạn.</p>'));
+    } catch (err) {
+      console.error('AuthController.confirmPasswordReset error:', err.message);
+      return res.status(500).type('html').send(page('Có lỗi xảy ra', '<p>Vui lòng thử lại sau.</p>'));
     }
   };
 
@@ -110,6 +144,10 @@ class AuthController {
   async getAccount(req, res) {
 
     try {
+      // Chỉ xem được tài khoản của chính mình (Admin xem được mọi tài khoản) — tránh lộ lương/thông tin cá nhân
+      if (req.user?.role !== 'Admin' && String(req.user?.sub) !== String(req.params.id)) {
+        return res.status(403).json({ message: 'Không có quyền xem tài khoản này' });
+      }
       const userObj = await UserDAO.findById(req.params.id);
       if (!userObj) return res.status(404).json({ message: 'Not found' });
 
@@ -177,10 +215,13 @@ class AuthController {
 
   async registerPatient(req, res) {
     try {
-      const { username, password, patient } = req.body;
+      const { username, password, patient } = req.body || {};
+      if (!isNonEmptyString(username) || !isNonEmptyString(password)) {
+        return res.status(400).json({ error: 'Cần nhập đủ Username và Password' });
+      }
 
-      // Tạo patient
-      const createdPatient = await PatientDAO.create(patient);
+      // Tạo patient (chỉ nhận các field thông tin cá nhân)
+      const createdPatient = await PatientDAO.create(pickFields(patient, PATIENT_FIELDS));
 
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = await UserDAO.create({
@@ -190,8 +231,11 @@ class AuthController {
         patient_id: createdPatient._id
       });
 
+      const userObj = user.toObject ? user.toObject() : { ...user };
+      delete userObj.password_hash;
+
       return res.status(201).json({
-        user,
+        user: userObj,
         patient: createdPatient
       });
 
