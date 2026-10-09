@@ -5,6 +5,7 @@ import dao from '../dao/medicine.dao.js';
 import MedicineImport from '../models/medicine-import.model.js';
 import MedicineService from '../services/medicine.service.js';
 import pickFields from '../utils/pick-fields.js';
+import { parseVNNumber, normalizeHeaderKey, isBlankCell, MAX_IMPORT_ROWS } from '../utils/import-parse.js';
 
 const FIELDS = ['name', 'category', 'unit', 'price'];
 
@@ -141,13 +142,19 @@ class MedicineController {
       const file = req.file;
       let medicines = [];
 
-      // Hàm chuẩn hóa key header: bỏ dấu tiếng Việt, khoảng trắng, ký tự đặc biệt, về lowercase
-      const normalizeKey = (key = "") =>
-        String(key)
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, "");
+      // Chuẩn hóa key header: bỏ dấu tiếng Việt (kể cả "đ"), khoảng trắng, ký tự đặc biệt
+      const normalizeKey = normalizeHeaderKey;
+
+      // Nhận diện cột theo header đã chuẩn hóa: khớp chính xác hoặc theo tiền tố,
+      // tránh includes lỏng (vd tiêu đề "BẢNG GIÁ THUỐC" bị nhận nhầm là cột giá)
+      const matchHeader = (norm) => {
+        if (!norm) return null;
+        if (["tenthuoc", "thuoc", "ten", "name", "medicine", "medicinename"].includes(norm) || norm.startsWith("tenthuoc")) return "name";
+        if (norm.startsWith("danhmuc") || ["category", "categories", "loaithuoc", "nhomthuoc"].includes(norm)) return "category";
+        if (norm.startsWith("donvi") || ["dvt", "unit"].includes(norm)) return "unit";
+        if (/^(gia|giaban|giabanle|dongia|price|saleprice)(vnd|d)?$/.test(norm)) return "price";
+        return null;
+      };
 
       // Xử lý file Excel (.xlsx, .xls)
       if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
@@ -166,7 +173,7 @@ class MedicineController {
           return res.status(400).json({ error: 'File không chứa dữ liệu hợp lệ' });
         }
 
-        // Tìm dòng header: có ít nhất cột tên thuốc + đơn vị + giá
+        // Tìm dòng header: cùng một dòng phải có cả cột tên thuốc và cột giá
         let headerRowIndex = -1;
         let fallbackHeaderIndex = -1; // dùng khi không match được theo tên cột
         let colIndex = {
@@ -186,28 +193,15 @@ class MedicineController {
             fallbackHeaderIndex = i;
           }
 
+          // Reset cho mỗi dòng để không cộng dồn cột từ dòng tiêu đề phía trên
+          const current = { name: -1, category: -1, unit: -1, price: -1 };
           row.forEach((cell, idx) => {
-            const norm = normalizeKey(String(cell || ""));
-            if (norm.includes("tenthuoc") || norm.includes("ten") || norm.includes("name")) {
-              if (colIndex.name === -1) colIndex.name = idx;
-            }
-            if (norm.includes("danhmuc") || norm.includes("category")) {
-              if (colIndex.category === -1) colIndex.category = idx;
-            }
-            if (norm.includes("donvi") || norm.includes("unit")) {
-              if (colIndex.unit === -1) colIndex.unit = idx;
-            }
-            if (norm.includes("gia") || norm.includes("price")) {
-              if (colIndex.price === -1) colIndex.price = idx;
-            }
+            const field = matchHeader(normalizeKey(cell));
+            if (field && current[field] === -1) current[field] = idx;
           });
 
-          // Xác nhận header hợp lệ nếu có ít nhất name, unit và price
-          if (
-            colIndex.name !== -1 &&
-            colIndex.unit !== -1 &&
-            colIndex.price !== -1
-          ) {
+          if (current.name !== -1 && current.price !== -1) {
+            colIndex = current;
             headerRowIndex = i;
             break;
           }
@@ -249,7 +243,7 @@ class MedicineController {
           const name = (colIndex.name !== -1 ? row[colIndex.name] : "") || "";
           const categoryStr = (colIndex.category !== -1 ? row[colIndex.category] : "") || "";
           const unit = (colIndex.unit !== -1 ? row[colIndex.unit] : "") || "";
-          const priceRaw = (colIndex.price !== -1 ? row[colIndex.price] : "") || 0;
+          const priceRaw = colIndex.price !== -1 ? row[colIndex.price] : "";
 
           // Xử lý category: có thể là string hoặc string phân cách bởi dấu phẩy
           let categories = [];
@@ -261,25 +255,16 @@ class MedicineController {
             }
           }
 
-          // Xử lý giá: loại bỏ dấu phẩy/phẩy chấm phân cách hàng nghìn và parse
-          let price = 0;
-          if (priceRaw !== undefined && priceRaw !== null && priceRaw !== '') {
-            // Nếu đã là số thì dùng luôn
-            if (typeof priceRaw === 'number') {
-              price = priceRaw;
-            } else {
-              // Chuyển sang string và loại bỏ các ký tự không phải số (trừ dấu chấm cho số thập phân)
-              const priceStr = String(priceRaw).trim();
-              // Loại bỏ dấu phẩy phân cách hàng nghìn (ví dụ: 42,000 -> 42000)
-              // Loại bỏ khoảng trắng và các ký tự đặc biệt
-              const cleanedPrice = priceStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              price = parseFloat(cleanedPrice) || 0;
-            }
-          }
+          // Giá bán: hỗ trợ "42.000", "1.250.000,5", "42,000 đ"; NaN/âm để service báo lỗi theo dòng
+          const price = parseVNNumber(priceRaw);
 
           // Bỏ qua các dòng trống hoàn toàn
-          if (!name && !unit && !price) {
+          if (!String(name).trim() && !String(unit).trim() && isBlankCell(priceRaw)) {
             continue;
+          }
+
+          if (medicines.length >= MAX_IMPORT_ROWS) {
+            return res.status(400).json({ error: `File có hơn ${MAX_IMPORT_ROWS} dòng dữ liệu. Vui lòng chia nhỏ file, tối đa ${MAX_IMPORT_ROWS} dòng mỗi lần import.` });
           }
 
           medicines.push({
@@ -300,13 +285,18 @@ class MedicineController {
           trim: true
         });
 
+        const dataCount = records.filter((r) => Object.values(r).some((v) => !isBlankCell(v))).length;
+        if (dataCount > MAX_IMPORT_ROWS) {
+          return res.status(400).json({ error: `File có ${dataCount} dòng dữ liệu, vượt quá giới hạn ${MAX_IMPORT_ROWS} dòng mỗi lần import. Vui lòng chia nhỏ file.` });
+        }
+
         medicines = records.map((row, index) => {
           const name = row['Tên thuốc'] || row['Tên'] || row['name'] || row['Name'] || '';
           const categoryStr = row['Danh mục'] || row['Category'] || row['category'] || '';
           const unit = row['Đơn vị'] || row['Unit'] || row['unit'] || '';
 
           // Tìm giá với nhiều tên cột có thể - tìm trong tất cả keys
-          let priceRaw = 0;
+          let priceRaw = '';
           const priceKeys = ['Giá', 'Giá (VNĐ)', 'Giá(VNĐ)', 'Price', 'price', 'Gia', 'gia', 'GIA'];
           for (const key of priceKeys) {
             if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
@@ -316,7 +306,7 @@ class MedicineController {
           }
 
           // Nếu không tìm thấy, tìm trong tất cả keys có chứa "giá" hoặc "price"
-          if (!priceRaw || priceRaw === 0) {
+          if (!priceRaw) {
             const allKeys = Object.keys(row);
             const priceKey = allKeys.find(key =>
               key.toLowerCase().includes('giá') ||
@@ -336,21 +326,8 @@ class MedicineController {
             }
           }
 
-          // Xử lý giá: loại bỏ dấu phẩy/phẩy chấm phân cách hàng nghìn và parse
-          let price = 0;
-          if (priceRaw !== undefined && priceRaw !== null && priceRaw !== '') {
-            // Nếu đã là số thì dùng luôn
-            if (typeof priceRaw === 'number') {
-              price = priceRaw;
-            } else {
-              // Chuyển sang string và loại bỏ các ký tự không phải số (trừ dấu chấm cho số thập phân)
-              const priceStr = String(priceRaw).trim();
-              // Loại bỏ dấu phẩy phân cách hàng nghìn (ví dụ: 42,000 -> 42000)
-              // Loại bỏ khoảng trắng và các ký tự đặc biệt
-              const cleanedPrice = priceStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              price = parseFloat(cleanedPrice) || 0;
-            }
-          }
+          // Giá bán: hỗ trợ "42.000", "1.250.000,5", "42,000 đ"; NaN/âm để service báo lỗi theo dòng
+          const price = parseVNNumber(priceRaw);
 
           return {
             name: String(name).trim(),

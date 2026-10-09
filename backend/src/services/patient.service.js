@@ -61,8 +61,9 @@ class PatientService {
         { disabled: false }
       );
 
+      // Không hồi sinh hóa đơn đã bị xóa riêng trước đó (đã hoàn kho)
       await InvoiceDAO.model.updateMany(
-        { patient_id: patientId, disabled: true },
+        { patient_id: patientId, disabled: true, stock_restored: { $ne: true } },
         { disabled: false }
       );
 

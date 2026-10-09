@@ -2,6 +2,9 @@ import Medicine from '../models/medicine.model.js';
 import MedicineImport from '../models/medicine-import.model.js';
 import Employee from '../models/employee.model.js';
 import dao from '../dao/medicine-import.dao.js';
+import { parseVNNumber, parseFlexibleDate, exactMatchRegex, isBlankCell } from '../utils/import-parse.js';
+
+const lowerTrim = (s = '') => String(s ?? '').trim().toLowerCase();
 
 class MedicineImportService {
   static async importWithTransaction({ imports, user }) {
@@ -12,104 +15,143 @@ class MedicineImportService {
       errors: []
     };
 
-    try {
-      const seenInFile = new Set();
-      const normalize = (s = "") =>
-        String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    // Khóa lô = thuốc + nhà cung cấp + mã lô (một lô mới cùng nhà cung cấp vẫn được nhập)
+    const seenInFile = new Set();
 
-      for (const importData of imports) {
-        try {
-          // ========= VALIDATE =========
-          if (!importData.medicineName) throw new Error(`Tên thuốc không được để trống (dòng ${importData.rowNumber})`);
-          if (!importData.supplier) throw new Error(`Nhà cung cấp không được để trống (dòng ${importData.rowNumber})`);
-          if (!importData.batchcode) throw new Error(`Mã lô không được để trống (dòng ${importData.rowNumber})`);
-          if (!importData.quantity || importData.quantity <= 0)
-            throw new Error(`Số lượng phải > 0 (dòng ${importData.rowNumber})`);
-          if (!importData.unit_price || importData.unit_price <= 0)
-            throw new Error(`Giá nhập phải > 0 (dòng ${importData.rowNumber})`);
+    for (const importData of imports) {
+      const row = importData.rowNumber;
+      const skip = (reason) => {
+        results.skipped++;
+        results.errors.push({ row, medicine: importData.medicineName, error: reason, type: 'skipped' });
+      };
 
-          // ========= DUPLICATE TRONG FILE =========
-          const key = `${normalize(importData.medicineName)}|${normalize(importData.supplier)}`;
-          if (seenInFile.has(key)) {
-            results.skipped++;
-            continue;
+      try {
+        // ========= VALIDATE (trước khi ghi bất cứ gì vào DB) =========
+        const medicineName = String(importData.medicineName ?? '').trim();
+        const supplier = String(importData.supplier ?? '').trim();
+        const batchcode = String(importData.batchcode ?? '').trim();
+        if (!medicineName) throw new Error(`Tên thuốc không được để trống (dòng ${row})`);
+        if (!supplier) throw new Error(`Nhà cung cấp không được để trống (dòng ${row})`);
+        if (!batchcode) throw new Error(`Mã lô không được để trống (dòng ${row})`);
+
+        const quantity = parseVNNumber(importData.quantity);
+        if (!Number.isInteger(quantity) || quantity <= 0) {
+          throw new Error(`Số lượng phải là số nguyên > 0, nhận được "${importData.quantity ?? ''}" (dòng ${row})`);
+        }
+        const unitPrice = parseVNNumber(importData.unit_price);
+        if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+          throw new Error(`Giá nhập phải > 0, nhận được "${importData.unit_price ?? ''}" (dòng ${row})`);
+        }
+
+        if (isBlankCell(importData.expiry_date)) throw new Error(`Hạn sử dụng không được để trống (dòng ${row})`);
+        const expiryDate = parseFlexibleDate(importData.expiry_date);
+        if (!expiryDate) {
+          throw new Error(`Hạn sử dụng không hợp lệ "${importData.expiry_date}", dùng dd/mm/yyyy hoặc yyyy-mm-dd (dòng ${row})`);
+        }
+        let importDate = new Date();
+        if (!isBlankCell(importData.import_date)) {
+          importDate = parseFlexibleDate(importData.import_date);
+          if (!importDate) {
+            throw new Error(`Ngày nhập không hợp lệ "${importData.import_date}", dùng dd/mm/yyyy hoặc yyyy-mm-dd (dòng ${row})`);
           }
-          seenInFile.add(key);
+        }
 
-          // ========= FIND / CREATE MEDICINE =========
-          let medicine = await Medicine.findOne({
-            name: new RegExp(`^${importData.medicineName}$`, 'i'),
+        // ========= DUPLICATE TRONG FILE =========
+        const key = `${lowerTrim(medicineName)}|${lowerTrim(supplier)}|${lowerTrim(batchcode)}`;
+        if (seenInFile.has(key)) {
+          skip(`Trùng lô trong file (cùng thuốc, nhà cung cấp, mã lô "${batchcode}") (dòng ${row})`);
+          continue;
+        }
+
+        // ========= FIND MEDICINE (khớp nguyên tên, lấy bản cũ nhất nếu DB có trùng) =========
+        let medicine = await Medicine.findOne({ name: exactMatchRegex(medicineName), disabled: false })
+          .sort({ created_at: 1, _id: 1 });
+
+        let newMedicineData = null;
+        if (!medicine) {
+          const price = parseVNNumber(importData.price);
+          const unit = String(importData.unit ?? '').trim();
+          if (!unit || !Number.isFinite(price) || price <= 0) {
+            throw new Error(`Thuốc "${medicineName}" chưa có trong hệ thống, cần Đơn vị và Giá bán > 0 để tạo mới (dòng ${row})`);
+          }
+          newMedicineData = {
+            name: medicineName,
+            category: importData.category || [],
+            unit,
+            price,
             disabled: false
+          };
+        }
+
+        // ========= FIND EMPLOYEE =========
+        let importedBy = user?.employee_id || null;
+        if (importData.importerName) {
+          const emp = await Employee.findOne({
+            fullname: importData.importerName
           });
 
-          if (!medicine) {
-            if (!importData.unit || !importData.price) {
-              throw new Error(`Thiếu thông tin tạo thuốc mới (dòng ${importData.rowNumber})`);
-            }
-
-            medicine = await Medicine.create({
-              name: importData.medicineName,
-              category: importData.category || [],
-              unit: importData.unit,
-              price: importData.price,
-              disabled: false
-            });
+          if (!emp) {
+            throw new Error(`Không tìm thấy người nhập "${importData.importerName}" (dòng ${row})`);
           }
+          importedBy = emp._id;
+        }
 
-          // ========= FIND EMPLOYEE =========
-          let importedBy = user?.employee_id || null;
-          if (importData.importerName) {
-            const emp = await Employee.findOne({
-              fullname: importData.importerName
-            });
-
-            if (!emp) {
-              throw new Error(`Không tìm thấy người nhập (dòng ${importData.rowNumber})`);
-            }
-            importedBy = emp._id;
-          }
-
-          // ========= DUPLICATE TRONG DB =========
+        // ========= DUPLICATE TRONG DB =========
+        if (medicine) {
           const existed = await MedicineImport.findOne({
             medicine_id: medicine._id,
-            supplier: new RegExp(`^${importData.supplier}$`, 'i'),
+            supplier: exactMatchRegex(supplier),
+            batchcode: exactMatchRegex(batchcode),
             disabled: false
           });
 
           if (existed) {
-            results.skipped++;
+            skip(`Lô "${batchcode}" của nhà cung cấp "${supplier}" đã tồn tại trong hệ thống (dòng ${row})`);
             continue;
           }
+        }
 
-          // ========= CREATE IMPORT =========
+        // ========= CREATE (chỉ tạo thuốc mới khi dòng đã hợp lệ) =========
+        let createdMedicine = null;
+        if (newMedicineData) {
+          createdMedicine = await Medicine.create(newMedicineData);
+          medicine = createdMedicine;
+        }
+
+        try {
           await dao.create({
             medicine_id: medicine._id,
-            supplier: importData.supplier,
-            batchcode: importData.batchcode,
-            quantity: importData.quantity,
-            remaining: importData.quantity,
-            unit_price: importData.unit_price,
-            expiry_date: importData.expiry_date,
-            import_date: importData.import_date,
+            supplier,
+            batchcode,
+            quantity,
+            remaining: quantity,
+            unit_price: unitPrice,
+            expiry_date: expiryDate,
+            import_date: importDate,
             imported_by: importedBy
           });
-
-          results.success++;
         } catch (err) {
-          results.failed++;
-          results.errors.push({
-            row: importData.rowNumber,
-            medicine: importData.medicineName,
-            error: err.message
-          });
+          // Không để lại thuốc mồ côi nếu tạo lô thất bại
+          if (createdMedicine) {
+            await Medicine.deleteOne({ _id: createdMedicine._id }).catch(() => {});
+          }
+          throw err;
         }
+
+        seenInFile.add(key);
+        results.success++;
+      } catch (err) {
+        results.failed++;
+        results.errors.push({
+          row,
+          medicine: importData.medicineName,
+          error: err.message,
+          type: 'failed'
+        });
       }
-
-      return results;
-
-    } catch (err) {
-      throw err;
     }
+
+    return results;
   }
 }
 

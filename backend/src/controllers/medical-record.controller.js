@@ -1,5 +1,10 @@
 import dao from '../dao/medical-record.dao.js';
 import pickFields from '../utils/pick-fields.js';
+import Invoice from '../models/invoice.model.js';
+
+// So sánh toa thuốc theo (thuốc, số lượng); đổi liều dùng không ảnh hưởng kho/tiền
+const prescriptionKey = (list = []) =>
+  list.map((p) => `${String(p.medicine_id?._id || p.medicine_id)}:${Number(p.quantity)}`).sort().join('|');
 
 const CREATE_FIELDS = ['appointment_id', 'patient_id', 'doctor_id', 'diagnosis', 'treatment', 'notes', 'prescriptions'];
 // Không cho đổi patient_id/doctor_id/appointment_id khi sửa (tránh gán hồ sơ sang bệnh nhân/bác sĩ khác)
@@ -77,8 +82,20 @@ class MedicalRecordController {
 
   async update(req, res) {
     try {
-      if (!(await loadOwnedRecord(req, res))) return;
-      const result = await dao.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
+      const record = await loadOwnedRecord(req, res);
+      if (!record) return;
+      const data = pickFields(req.body, UPDATE_FIELDS);
+
+      // Đã có hóa đơn (kho đã trừ theo toa cũ) thì không cho đổi thuốc/số lượng
+      if (data.prescriptions && prescriptionKey(data.prescriptions) !== prescriptionKey(record.prescriptions)) {
+        const invoiced = record.appointment_id &&
+          (await Invoice.exists({ appointment_id: record.appointment_id, disabled: false }));
+        if (invoiced) {
+          return res.status(400).json({ error: 'Hồ sơ đã có hóa đơn. Hãy xóa hóa đơn trước khi sửa thuốc hoặc số lượng trong toa.' });
+        }
+      }
+
+      const result = await dao.update(req.params.id, data);
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });

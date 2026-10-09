@@ -3,6 +3,15 @@ import nodemailer from "nodemailer";
 import Payroll from "../models/payroll.model.js";
 import BaseDAO from './base.dao.js';
 
+// Khoảng [ngày 1 của tháng, ngày 1 tháng sau) theo giờ địa phương.
+// Không dùng $lte new Date(year, month, 0): đó là 0h ngày cuối tháng, bỏ sót gần trọn ngày cuối.
+function monthRange(month, year) {
+  return {
+    $gte: new Date(year, month - 1, 1),
+    $lt: new Date(year, month, 1),
+  };
+}
+
 // Kế thừa
 function getEnvValue(key, defaultValue = null) {
   const value = process.env[key];
@@ -57,10 +66,7 @@ class PayrollDAO extends BaseDAO {
   async findByEmployeeAndMonth(employeeId, month, year, session) {
     return this.model.findOne({
       employee_id: employeeId,
-      paydate: {
-        $gte: new Date(year, month - 1, 1),
-        $lte: new Date(year, month, 0),
-      },
+      paydate: monthRange(month, year),
       disabled: false
     }).session(session);
   }
@@ -94,10 +100,8 @@ class PayrollDAO extends BaseDAO {
 
       const payroll = await Payroll.findOne({
         employee_id: employeeId,
-        paydate: {
-          $gte: new Date(year, month - 1, 1),
-          $lte: new Date(year, month, 0),
-        },
+        paydate: monthRange(month, year),
+        disabled: false,
       }).populate("employee_id");
 
       if (!payroll) throw new Error("Không tìm thấy bảng lương tháng này.");

@@ -1,5 +1,12 @@
 import { body, param } from 'express-validator';
 
+// Số lượng âm/lẻ sẽ làm sai tổng tiền hóa đơn và tồn kho
+const prescriptionItemRules = () => [
+  body('prescriptions.*.medicine_id').isMongoId().withMessage('Thuốc trong toa không hợp lệ'),
+  body('prescriptions.*.quantity').isInt({ min: 1 }).withMessage('Số lượng thuốc phải là số nguyên dương').toInt(),
+  body('prescriptions.*.dosage').optional({ nullable: true }).isString()
+];
+
 export default class MedicalRecordValidator {
   static createMedicalRecord() {
     return [
@@ -18,7 +25,8 @@ export default class MedicalRecordValidator {
       body('diagnosis').isString().notEmpty().withMessage('Chẩn đoán không được để trống'),
       body('treatment').optional().isString(),
       body('notes').optional().isString(),
-      body('prescriptions').optional().isArray()
+      body('prescriptions').optional().isArray(),
+      ...prescriptionItemRules()
     ];
   }
 
@@ -26,7 +34,9 @@ export default class MedicalRecordValidator {
     return [
       param('id').isMongoId(),
       body('diagnosis').optional().isString(),
-      body('treatment').optional().isString()
+      body('treatment').optional().isString(),
+      body('prescriptions').optional().isArray(),
+      ...prescriptionItemRules()
     ];
   }
 }

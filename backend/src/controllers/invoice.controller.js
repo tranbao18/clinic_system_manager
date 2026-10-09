@@ -1,12 +1,12 @@
-import mongoose from 'mongoose';
-
 import dao from '../dao/invoice.dao.js';
 import medicalRecordDao from '../dao/medical-record.dao.js';
 import notificationDao from '../dao/notification.dao.js';
-import MedicineImport from '../models/medicine-import.model.js';
 import Payment from '../models/payment.model.js';
 import InvoiceService from '../services/invoice.service.js';
 import pickFields from '../utils/pick-fields.js';
+import withDocLock from '../utils/doc-lock.js';
+import Appointment from '../models/appointment.model.js';
+import { aggregatePrescriptions, deductForPrescriptions, releaseDeductions } from '../services/inventory.service.js';
 
 // Trạng thái hóa đơn luôn suy ra từ tổng tiền đã thanh toán, không tin giá trị client gửi
 async function computeInvoiceStatus(invoiceId, totalAmount) {
@@ -16,140 +16,6 @@ async function computeInvoiceStatus(invoiceId, totalAmount) {
   if (totalPaid > 0) return 'Partial';
   return 'Unpaid';
 }
-
-// Kế thừa
-/**
- * Trừ số lượng thuốc từ medicine-imports sử dụng thuật toán FEFO (First Expired First Out)
- * @param {Object} prescription - Prescription object với medicine_id và quantity
- * @returns {Promise<void>}
- */
-async function deductMedicineFromInventory(prescription) {
-  // Xử lý medicine_id có thể là object (khi populate) hoặc string/ObjectId
-  let medicineId = prescription.medicine_id;
-  if (medicineId && typeof medicineId === 'object') {
-    medicineId = medicineId._id || medicineId.toString();
-  }
-
-  // Convert sang ObjectId để đảm bảo so sánh đúng
-  try {
-    medicineId = new mongoose.Types.ObjectId(medicineId);
-  } catch (err) {
-    console.error('❌ [deductMedicineFromInventory] Lỗi convert medicineId sang ObjectId:', {
-      medicineId,
-      error: err.message
-    });
-    return;
-  }
-
-  const requiredQuantity = Number(prescription.quantity) || 0;
-
-  console.log('🔍 [deductMedicineFromInventory] Bắt đầu trừ thuốc:', {
-    medicineId: medicineId.toString(),
-    requiredQuantity,
-    prescriptionType: typeof prescription.medicine_id
-  });
-
-  if (!medicineId || requiredQuantity <= 0) {
-    console.warn('⚠️ [deductMedicineFromInventory] Bỏ qua - medicineId hoặc quantity không hợp lệ:', {
-      medicineId: medicineId?.toString(),
-      requiredQuantity
-    });
-    return;
-  }
-
-  // Lấy tất cả các lô thuốc còn lại, chưa hết hạn, sắp xếp theo hạn sử dụng (FEFO)
-  const availableImports = await MedicineImport.find({
-    medicine_id: medicineId,
-    disabled: false,
-    remaining: { $gt: 0 },
-    expiry_date: { $gte: new Date() } // Chỉ lấy thuốc chưa hết hạn
-  })
-    .sort({ expiry_date: 1, import_date: 1 }) // Sắp xếp theo hạn sử dụng (sớm nhất trước), sau đó theo ngày nhập
-    .exec();
-
-  console.log(`📦 [deductMedicineFromInventory] Tìm thấy ${availableImports.length} lô thuốc chưa hết hạn cho medicineId: ${medicineId}`);
-
-  let remainingToDeduct = requiredQuantity;
-  let totalDeducted = 0;
-
-  // Trừ từng lô theo thứ tự FEFO
-  for (const importItem of availableImports) {
-    if (remainingToDeduct <= 0) {
-      break;
-    }
-
-    const availableInThisBatch = importItem.remaining || 0;
-    const deductFromThisBatch = Math.min(remainingToDeduct, availableInThisBatch);
-
-    console.log(`📉 [deductMedicineFromInventory] Trừ từ lô ${importItem._id}:`, {
-      batchCode: importItem.batchcode,
-      availableBefore: availableInThisBatch,
-      deducting: deductFromThisBatch,
-      remainingAfter: availableInThisBatch - deductFromThisBatch
-    });
-
-    // Cập nhật remaining
-    const newRemaining = availableInThisBatch - deductFromThisBatch;
-    const updateResult = await MedicineImport.findByIdAndUpdate(importItem._id, {
-      remaining: newRemaining,
-      updated_at: new Date()
-    }, { new: true });
-
-    console.log(`✅ [deductMedicineFromInventory] Đã cập nhật lô ${importItem._id}, remaining mới: ${updateResult?.remaining}`);
-
-    remainingToDeduct -= deductFromThisBatch;
-    totalDeducted += deductFromThisBatch;
-  }
-
-  // Nếu vẫn còn thiếu, kiểm tra cả thuốc đã hết hạn (nhưng vẫn còn trong kho)
-  if (remainingToDeduct > 0) {
-    console.log(`⚠️ [deductMedicineFromInventory] Vẫn còn thiếu ${remainingToDeduct}, kiểm tra thuốc đã hết hạn...`);
-    const expiredImports = await MedicineImport.find({
-      medicine_id: medicineId,
-      disabled: false,
-      remaining: { $gt: 0 },
-      expiry_date: { $lt: new Date() } // Thuốc đã hết hạn
-    })
-      .sort({ expiry_date: 1, import_date: 1 })
-      .exec();
-
-    console.log(`📦 [deductMedicineFromInventory] Tìm thấy ${expiredImports.length} lô thuốc đã hết hạn`);
-
-    for (const importItem of expiredImports) {
-      if (remainingToDeduct <= 0) {
-        break;
-      }
-
-      const availableInThisBatch = importItem.remaining || 0;
-      const deductFromThisBatch = Math.min(remainingToDeduct, availableInThisBatch);
-
-      console.log(`📉 [deductMedicineFromInventory] Trừ từ lô đã hết hạn ${importItem._id}:`, {
-        batchCode: importItem.batchcode,
-        availableBefore: availableInThisBatch,
-        deducting: deductFromThisBatch
-      });
-
-      const newRemaining = availableInThisBatch - deductFromThisBatch;
-      await MedicineImport.findByIdAndUpdate(
-        importItem._id,
-        { remaining: newRemaining, updated_at: new Date() }
-      );
-
-      remainingToDeduct -= deductFromThisBatch;
-      totalDeducted += deductFromThisBatch;
-    }
-  }
-
-  // Nếu vẫn còn thiếu sau khi trừ hết, ghi log cảnh báo (không throw error để không block việc tạo invoice)
-  if (remainingToDeduct > 0) {
-    console.warn(
-      `⚠️ [deductMedicineFromInventory] Cảnh báo: Không đủ thuốc trong kho. Medicine ID: ${medicineId}, Yêu cầu: ${requiredQuantity}, Đã trừ: ${totalDeducted}, Thiếu: ${remainingToDeduct}`
-    );
-  } else {
-    console.log(`✅ [deductMedicineFromInventory] Hoàn thành trừ thuốc. Medicine ID: ${medicineId}, Đã trừ: ${totalDeducted}/${requiredQuantity}`);
-  }
-}
-//
 
 class InvoiceController {
 
@@ -190,66 +56,56 @@ class InvoiceController {
         });
       }
 
-      // Tính tổng tiền từ prescriptions
-      let totalAmount = 0;
-      for (const prescription of medicalRecord.prescriptions) {
-        const medicine = prescription.medicine_id;
-        if (medicine && medicine.price && prescription.quantity) {
-          totalAmount += Number(medicine.price) * Number(prescription.quantity);
-        }
+      // Toa thuốc phải hợp lệ: thuốc tồn tại, số lượng nguyên dương, có giá
+      const invalid = [];
+      for (const p of medicalRecord.prescriptions) {
+        const medicine = p.medicine_id;
+        const qty = Number(p.quantity);
+        if (!medicine || !medicine._id) invalid.push('có thuốc không còn tồn tại');
+        else if (!Number.isInteger(qty) || qty <= 0) invalid.push(`${medicine.name}: số lượng không hợp lệ`);
+        else if (!(Number(medicine.price) > 0)) invalid.push(`${medicine.name}: chưa có giá`);
+      }
+      if (invalid.length > 0) {
+        return res.status(400).json({ error: `Toa thuốc không hợp lệ: ${invalid.join('; ')}` });
       }
 
-      if (totalAmount === 0) {
-        return res.status(400).json({
-          error: 'Tổng tiền bằng 0. Vui lòng kiểm tra giá thuốc và số lượng.'
-        });
-      }
+      // Tổng tiền tính từ giá thuốc trong DB
+      const totalAmount = medicalRecord.prescriptions.reduce(
+        (sum, p) => sum + Number(p.medicine_id.price) * Number(p.quantity),
+        0
+      );
 
-      // Kiểm tra xem đã có invoice cho appointment này chưa
       const appointmentId = medicalRecord.appointment_id._id || medicalRecord.appointment_id;
-      const existingInvoice = await dao.model.findOne({
-        appointment_id: appointmentId,
-        disabled: false
-      });
+      const patientId = medicalRecord.patient_id?._id || medicalRecord.patient_id;
 
-      if (existingInvoice) {
-        return res.status(400).json({
-          error: 'Hóa đơn đã tồn tại cho lịch hẹn này',
-          invoice_id: existingInvoice._id
+      // Khóa theo lịch hẹn: bấm 2 lần / 2 người cùng tạo sẽ không sinh 2 hóa đơn và không trừ kho 2 lần
+      const result = await withDocLock(Appointment, appointmentId, async () => {
+        const existingInvoice = await dao.model.findOne({
+          appointment_id: appointmentId,
+          disabled: false
         });
-      }
-
-      console.log(`💊 [createFromMedicalRecord] Bắt đầu trừ thuốc cho ${medicalRecord.prescriptions.length} loại thuốc`);
-
-      for (const prescription of medicalRecord.prescriptions) {
-        try {
-          console.log(`💊 [createFromMedicalRecord] Đang trừ thuốc:`, {
-            medicine: prescription.medicine_id,
-            quantity: prescription.quantity
-          });
-
-          await deductMedicineFromInventory(prescription);
-        } catch (err) {
-          console.error('❌ [createFromMedicalRecord] Lỗi khi trừ thuốc từ kho:', err);
-          console.error('❌ [createFromMedicalRecord] Chi tiết lỗi:', {
-            prescription,
-            error: err.message,
-            stack: err.stack
+        if (existingInvoice) {
+          throw Object.assign(new Error('Hóa đơn đã tồn tại cho lịch hẹn này'), {
+            status: 400,
+            invoice_id: existingInvoice._id
           });
         }
-      }
-      console.log(`✅ [createFromMedicalRecord] Hoàn thành trừ thuốc, bắt đầu tạo invoice`);
 
-      const patientId = medicalRecord.patient_id._id || medicalRecord.patient_id;
-
-      const invoiceData = {
-        patient_id: patientId,
-        appointment_id: appointmentId,
-        total_amount: totalAmount,
-        status: 'Unpaid'
-      };
-
-      const result = await dao.create(invoiceData);
+        // Thiếu thuốc còn hạn -> báo lỗi, không tạo hóa đơn, không trừ gì
+        const deductions = await deductForPrescriptions(aggregatePrescriptions(medicalRecord.prescriptions));
+        try {
+          return await dao.create({
+            patient_id: patientId,
+            appointment_id: appointmentId,
+            total_amount: totalAmount,
+            status: 'Unpaid',
+            stock_deductions: deductions
+          });
+        } catch (err) {
+          await releaseDeductions(deductions);
+          throw err;
+        }
+      });
 
       const populatedInvoice = await dao.model
         .findById(result._id)
@@ -283,7 +139,11 @@ class InvoiceController {
 
       res.status(201).json(populatedInvoice);
     } catch (err) {
-        return res.status(500).json({ error: err.message });
+      return res.status(err.status || 500).json({
+        error: err.message,
+        ...(err.invoice_id && { invoice_id: err.invoice_id }),
+        ...(err.shortages && { shortages: err.shortages })
+      });
     }
   };
   //
@@ -343,7 +203,7 @@ class InvoiceController {
       await InvoiceService.deleteCascade(req.params.id);
       res.json({ message: 'Deleted with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(err.status || 500).json({ error: err.message });
     }
   };
 
@@ -352,7 +212,7 @@ class InvoiceController {
       await InvoiceService.restoreCascade(req.params.id);
       res.json({ message: 'Invoice restore with cascade' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(err.status || 500).json({ error: err.message });
     }
   };
 

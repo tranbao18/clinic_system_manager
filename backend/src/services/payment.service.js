@@ -1,126 +1,116 @@
 import Payment from '../models/payment.model.js';
+import Invoice from '../models/invoice.model.js';
 import paymentDao from '../dao/payment.dao.js';
 import invoiceDao from '../dao/invoice.dao.js';
+import withDocLock from '../utils/doc-lock.js';
+
+// So sánh tiền theo đơn vị đồng (làm tròn 2 chữ số) để tránh sai số số thực
+const toCents = (n) => Math.round(Number(n) * 100);
+
+function parseAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw Object.assign(new Error('Số tiền thanh toán không hợp lệ'), { status: 400 });
+  }
+  return amount;
+}
+
+async function sumActivePayments(invoiceId, excludeId = null) {
+  const filter = { invoice_id: invoiceId, disabled: false };
+  if (excludeId) filter._id = { $ne: excludeId };
+  const payments = await Payment.find(filter);
+  return payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+}
 
 class PaymentService {
   // Kế thừa
+  // Mọi thao tác thay đổi số tiền đều chạy trong khóa theo hóa đơn: 2 khoản thanh toán gửi cùng lúc
+  // không thể cùng vượt qua bước kiểm tra "còn lại" và làm hóa đơn bị trả vượt.
   async create(data) {
-    try {
-      const { invoice_id, amount } = data;
+    const amount = parseAmount(data.amount);
+    const invoiceId = data.invoice_id;
 
-      const invoice = await invoiceDao.findById(invoice_id);
-      if (!invoice) throw new Error('Hóa đơn không tồn tại');
+    const invoice = await invoiceDao.findById(invoiceId);
+    if (!invoice) throw Object.assign(new Error('Hóa đơn không tồn tại'), { status: 404 });
+    if (invoice.disabled) throw Object.assign(new Error('Hóa đơn đã bị xóa'), { status: 400 });
 
-      const payments = await Payment.find({
-        invoice_id,
-        disabled: false
-      });
-
-      const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-      const remaining = invoice.total_amount - totalPaid;
-
-      if (amount > remaining) {
-        throw new Error(`Số tiền thanh toán vượt quá số tiền còn lại`);
+    return withDocLock(Invoice, invoiceId, async () => {
+      const totalPaid = await sumActivePayments(invoiceId);
+      if (toCents(totalPaid) + toCents(amount) > toCents(invoice.total_amount)) {
+        throw Object.assign(new Error('Số tiền thanh toán vượt quá số tiền còn lại'), { status: 400 });
       }
 
-      const payment = await paymentDao.create(data);
-
-      await this.#updateInvoiceStatus(invoice, totalPaid + amount);
-
+      const payment = await paymentDao.create({ ...data, amount });
+      await this.#updateInvoiceStatus(invoiceId);
       return payment;
-
-    } catch (err) {
-      throw err;
-    }
+    });
   }
 
   async update(id, data) {
-    try {
-      const current = await paymentDao.findById(id);
-      if (!current) throw new Error('Thanh toán không tồn tại');
+    const current = await paymentDao.findById(id);
+    if (!current || current.disabled) throw Object.assign(new Error('Thanh toán không tồn tại'), { status: 404 });
 
-      if (data.amount !== undefined && data.amount !== current.amount) {
-        const invoice = await invoiceDao.findById(current.invoice_id);
-        if (!invoice) throw new Error('Hóa đơn không tồn tại');
+    if (data.amount === undefined) {
+      return paymentDao.update(id, data);
+    }
 
-        const payments = await Payment.find({
-          invoice_id: invoice._id,
-          disabled: false,
-          _id: { $ne: id }
-        });
+    const amount = parseAmount(data.amount);
+    return withDocLock(Invoice, current.invoice_id, async () => {
+      const invoice = await invoiceDao.findById(current.invoice_id);
+      if (!invoice) throw Object.assign(new Error('Hóa đơn không tồn tại'), { status: 404 });
 
-        const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-
-        if (data.amount > invoice.total_amount - totalPaid) {
-          throw new Error('Số tiền thanh toán vượt quá số tiền còn lại');
-        }
-
-        const updated = await paymentDao.update(id, data);
-        await this.#updateInvoiceStatus(invoice, totalPaid + data.amount);
-
-        return updated;
+      const otherPaid = await sumActivePayments(invoice._id, id);
+      if (toCents(otherPaid) + toCents(amount) > toCents(invoice.total_amount)) {
+        throw Object.assign(new Error('Số tiền thanh toán vượt quá số tiền còn lại'), { status: 400 });
       }
 
-      const updated = await paymentDao.update(id, data);
+      const updated = await paymentDao.update(id, { ...data, amount });
+      await this.#updateInvoiceStatus(invoice._id);
       return updated;
-
-    } catch (err) {
-      throw err;
-    }
+    });
   }
 
   async remove(id) {
-    try {
-      const payment = await paymentDao.findById(id);
-      if (!payment) throw new Error('Thanh toán không tồn tại');
+    const payment = await paymentDao.findById(id);
+    if (!payment) throw Object.assign(new Error('Thanh toán không tồn tại'), { status: 404 });
 
-      await paymentDao.delete(id);
-
-      const invoice = await invoiceDao.findById(payment.invoice_id);
-      if (invoice) {
-        const payments = await Payment.find({
-          invoice_id: invoice._id,
-          disabled: false
-        });
-
-        const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-        await this.#updateInvoiceStatus(invoice, totalPaid);
-      }
-
-    } catch (err) {
-      throw err;
+    await paymentDao.delete(id);
+    if (await Invoice.exists({ _id: payment.invoice_id })) {
+      await this.#updateInvoiceStatus(payment.invoice_id);
     }
   }
 
   async restore(id) {
-    try {
-      const payment = await paymentDao.findById(id);
-      if (!payment) throw new Error('Thanh toán không tồn tại');
+    const payment = await paymentDao.findById(id);
+    if (!payment) throw Object.assign(new Error('Thanh toán không tồn tại'), { status: 404 });
+    if (!payment.disabled) return payment;
+
+    return withDocLock(Invoice, payment.invoice_id, async () => {
+      const invoice = await invoiceDao.findById(payment.invoice_id);
+      if (!invoice) throw Object.assign(new Error('Hóa đơn không tồn tại'), { status: 404 });
+
+      // Khôi phục không được làm hóa đơn bị trả vượt
+      const totalPaid = await sumActivePayments(invoice._id);
+      if (toCents(totalPaid) + toCents(payment.amount) > toCents(invoice.total_amount)) {
+        throw Object.assign(new Error('Khôi phục khoản này sẽ làm hóa đơn bị thanh toán vượt'), { status: 400 });
+      }
 
       await paymentDao.restore(id);
-
-      const invoice = await invoiceDao.findById(payment.invoice_id);
-      if (!invoice) throw new Error('Hóa đơn không tồn tại');
-
-      const payments = await Payment.find({
-        invoice_id: invoice._id,
-        disabled: false
-      });
-
-      const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-      await this.#updateInvoiceStatus(invoice, totalPaid);
-
-    } catch (err) {
-      throw err;
-    }
+      await this.#updateInvoiceStatus(invoice._id);
+    });
   }
 
-  async #updateInvoiceStatus(invoice, totalPaid) {
+  // Tính lại trạng thái từ DB sau khi ghi (không dựa vào số liệu truyền vào)
+  async #updateInvoiceStatus(invoiceId) {
+    const invoice = await Invoice.findById(invoiceId).select('total_amount');
+    if (!invoice) return;
+    const totalPaid = await sumActivePayments(invoiceId);
+
     let status = 'Unpaid';
-    if (totalPaid >= invoice.total_amount) status = 'Paid';
+    if (toCents(totalPaid) >= toCents(invoice.total_amount)) status = 'Paid';
     else if (totalPaid > 0) status = 'Partial';
 
-    await invoiceDao.update(invoice._id, { status });
+    await invoiceDao.update(invoiceId, { status });
   }
   //
 }

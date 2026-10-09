@@ -1,5 +1,6 @@
 import Employee from "../models/employee.model.js";
 import BaseDAO from './base.dao.js';
+import { exactMatchRegex } from '../utils/import-parse.js';
 
 let employeeModel = null;
 
@@ -41,29 +42,23 @@ class EmployeeDAO extends BaseDAO {
   }
 
   async findByEmail(email, session = null) {
-    if (!email) return null;
+    if (!email || !String(email).trim()) return null;
 
     return Employee.findOne({
-      email: {
-        $regex: new RegExp(`^${this.escapeRegex(email.trim())}$`, 'i')
-      },
+      email: { $regex: exactMatchRegex(email) },
       disabled: false
     }).session(session);
   }
 
-  async findByName(name, session = null) {
-    if (!name) return null;
+  // Khớp nguyên họ tên (không phân biệt hoa thường), trả tối đa `limit` bản ghi
+  // để nơi gọi phát hiện trùng tên thay vì gán nhầm nhân viên
+  async findByExactName(name, limit = 2, session = null) {
+    if (!name || !String(name).trim()) return [];
 
-    return Employee.findOne({
-      fullname: {
-        $regex: new RegExp(this.escapeRegex(name.trim()), 'i')
-      },
+    return Employee.find({
+      fullname: { $regex: exactMatchRegex(name) },
       disabled: false
-    }).session(session);
-  }
-
-  escapeRegex(str = '') {
-    return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }).limit(limit).session(session);
   }
 }
 

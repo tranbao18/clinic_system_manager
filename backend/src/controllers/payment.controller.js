@@ -13,7 +13,7 @@ class PaymentController {
       const result = await PaymentService.create(pickFields(req.body, CREATE_FIELDS));
       res.status(201).json(result);
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      res.status(err.status || 400).json({ error: err.message });
     }
   }
 
@@ -54,7 +54,7 @@ class PaymentController {
       const result = await PaymentService.update(req.params.id, pickFields(req.body, UPDATE_FIELDS));
       res.json(result);
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      res.status(err.status || 400).json({ error: err.message });
     }
   }
 
@@ -63,7 +63,7 @@ class PaymentController {
       await PaymentService.remove(req.params.id);
       res.json({ message: 'Deleted' });
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      res.status(err.status || 400).json({ error: err.message });
     }
   }
 
@@ -72,7 +72,7 @@ class PaymentController {
       await PaymentService.restore(req.params.id);
       res.json({ message: 'Restored' });
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      res.status(err.status || 400).json({ error: err.message });
     }
   }
 }

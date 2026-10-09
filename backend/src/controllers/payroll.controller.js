@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync';
 import dao from '../dao/payroll.dao.js';
 import PayrollImportService from '../services/payroll.service.js';
 import pickFields from '../utils/pick-fields.js';
+import { parseVNNumber, isBlankCell, MAX_IMPORT_ROWS } from '../utils/import-parse.js';
 
 const AMOUNT_FIELDS = ['basic_salary', 'bonus', 'deductions'];
 
@@ -30,6 +31,19 @@ class PayrollController {
     try {
       const data = pickFields(req.body, ['employee_id', 'paydate', ...AMOUNT_FIELDS]);
       Object.assign(data, buildPayrollAmounts(data));
+
+      // Mỗi nhân viên chỉ có một bảng lương/tháng (giống kiểm tra khi import)
+      const paydate = new Date(data.paydate);
+      if (Number.isNaN(paydate.getTime())) {
+        return res.status(400).json({ error: 'Ngày thanh toán không hợp lệ' });
+      }
+      const month = paydate.getMonth() + 1;
+      const year = paydate.getFullYear();
+      const existed = await dao.findByEmployeeAndMonth(data.employee_id, month, year);
+      if (existed) {
+        return res.status(400).json({ error: `Nhân viên đã có bảng lương tháng ${month}/${year}` });
+      }
+
       const result = await dao.create(data);
       res.status(201).json(result);
     } catch (err) {
@@ -242,38 +256,8 @@ class PayrollController {
         return undefined;
       };
 
-      const parseDate = (dateValue) => {
-        if (!dateValue) return null;
-        if (dateValue instanceof Date) {
-          return dateValue;
-        }
-
-        if (typeof dateValue === 'number') {
-          const excelEpoch = new Date(1899, 11, 30);
-          const date = new Date(excelEpoch.getTime() + dateValue * 24 * 60 * 60 * 1000);
-          return date;
-        }
-
-        if (typeof dateValue === 'string') {
-          const trimmed = dateValue.trim();
-          const formats = [
-            /^\d{4}-\d{2}-\d{2}$/, // YYYY-MM-DD
-            /^\d{2}\/\d{2}\/\d{4}$/, // DD/MM/YYYY
-            /^\d{2}-\d{2}-\d{4}$/, // DD-MM-YYYY
-          ];
-
-          for (const format of formats) {
-            if (format.test(trimmed)) {
-              const date = new Date(trimmed);
-              if (!isNaN(date.getTime())) {
-                return date;
-              }
-            }
-          }
-        }
-
-        return null;
-      };
+      // Dòng trống: không tên, không email và các khoản tiền trống/0
+      const isEmptyAmount = (v) => isBlankCell(v) || parseVNNumber(v) === 0;
 
       // Xử lý file Excel (.xlsx, .xls)
       if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
@@ -307,37 +291,40 @@ class PayrollController {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
 
+          // Reset cho mỗi dòng để dòng tiêu đề phía trên (vd "BẢNG LƯƠNG VÀ THƯỞNG") không làm lệch cột
+          const current = { name: -1, email: -1, basic: -1, bonus: -1, deductions: -1, paydate: -1 };
           row.forEach((cell, idx) => {
             const norm = normalizeKey(String(cell || ""));
             if (norm.includes("tennhanvien") || norm.includes("hoten")) {
-              if (colIndex.name === -1) colIndex.name = idx;
+              if (current.name === -1) current.name = idx;
             }
             if (norm.includes("email")) {
-              if (colIndex.email === -1) colIndex.email = idx;
+              if (current.email === -1) current.email = idx;
             }
             if (norm.includes("luongcoban") || norm === "luong" || norm.includes("salary")) {
-              if (colIndex.basic === -1) colIndex.basic = idx;
+              if (current.basic === -1) current.basic = idx;
             }
             if (norm.includes("thuong") || norm.includes("bonus")) {
-              if (colIndex.bonus === -1) colIndex.bonus = idx;
+              if (current.bonus === -1) current.bonus = idx;
             }
             if (norm.includes("khautru") || norm.includes("deduction")) {
-              if (colIndex.deductions === -1) colIndex.deductions = idx;
+              if (current.deductions === -1) current.deductions = idx;
             }
             if (
               norm.includes("ngaythanhtoan") ||
-              (norm === "ngay" && colIndex.paydate === -1) ||
+              norm === "ngay" ||
               norm.includes("paydate") ||
               norm === "date"
             ) {
-              if (colIndex.paydate === -1) colIndex.paydate = idx;
+              if (current.paydate === -1) current.paydate = idx;
             }
           });
 
           if (
-            (colIndex.name !== -1 || colIndex.email !== -1) &&
-            colIndex.basic !== -1
+            (current.name !== -1 || current.email !== -1) &&
+            current.basic !== -1
           ) {
+            colIndex = current;
             headerRowIndex = i;
             break;
           }
@@ -364,49 +351,34 @@ class PayrollController {
             (colIndex.name !== -1 ? row[colIndex.name] : "") || "";
           const employeeEmail =
             (colIndex.email !== -1 ? row[colIndex.email] : "") || "";
-          const basicSalaryRaw =
-            (colIndex.basic !== -1 ? row[colIndex.basic] : "") || 0;
-          const bonusRaw =
-            (colIndex.bonus !== -1 ? row[colIndex.bonus] : "") || 0;
-          const deductionsRaw =
-            (colIndex.deductions !== -1 ? row[colIndex.deductions] : "") || 0;
-          const paydateRaw =
-            (colIndex.paydate !== -1 ? row[colIndex.paydate] : "") || "";
-
-          const paydate = parseDate(paydateRaw) || new Date();
-
-          // Xử lý số tiền: loại bỏ dấu phẩy/phẩy chấm phân cách hàng nghìn
-          const parseAmount = (value) => {
-            if (!value && value !== 0) return 0;
-            if (typeof value === 'number') return value;
-            const cleaned = String(value).replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-            return parseFloat(cleaned) || 0;
-          };
-
-          const basicSalary = parseAmount(basicSalaryRaw);
-          const bonus = parseAmount(bonusRaw);
-          const deductions = parseAmount(deductionsRaw);
-          const netSalary = basicSalary + bonus - deductions;
+          // Giữ nguyên giá trị ô (số tiền dạng "10.000.000", ngày dạng serial Excel...), service parse + báo lỗi theo dòng
+          const basicSalaryRaw = colIndex.basic !== -1 ? row[colIndex.basic] : "";
+          const bonusRaw = colIndex.bonus !== -1 ? row[colIndex.bonus] : "";
+          const deductionsRaw = colIndex.deductions !== -1 ? row[colIndex.deductions] : "";
+          const paydateRaw = colIndex.paydate !== -1 ? row[colIndex.paydate] : "";
 
           // Bỏ qua các dòng trống hoàn toàn
           if (
-            !employeeName &&
-            !employeeEmail &&
-            !basicSalary &&
-            !bonus &&
-            !deductions
+            !String(employeeName).trim() &&
+            !String(employeeEmail).trim() &&
+            isEmptyAmount(basicSalaryRaw) &&
+            isEmptyAmount(bonusRaw) &&
+            isEmptyAmount(deductionsRaw)
           ) {
             continue;
+          }
+
+          if (payrolls.length >= MAX_IMPORT_ROWS) {
+            return res.status(400).json({ error: `File có hơn ${MAX_IMPORT_ROWS} dòng dữ liệu. Vui lòng chia nhỏ file, tối đa ${MAX_IMPORT_ROWS} dòng mỗi lần import.` });
           }
 
           payrolls.push({
             employeeName: String(employeeName).trim(),
             employeeEmail: String(employeeEmail).trim(),
-            basic_salary: basicSalary,
-            bonus: bonus,
-            deductions: deductions,
-            net_salary: netSalary,
-            paydate: paydate,
+            basic_salary: basicSalaryRaw,
+            bonus: bonusRaw,
+            deductions: deductionsRaw,
+            paydate: paydateRaw,
             rowNumber: i + 1
           });
         }
@@ -418,6 +390,11 @@ class PayrollController {
           skip_empty_lines: true,
           trim: true
         });
+
+        const dataCount = records.filter((r) => Object.values(r).some((v) => !isBlankCell(v))).length;
+        if (dataCount > MAX_IMPORT_ROWS) {
+          return res.status(400).json({ error: `File có ${dataCount} dòng dữ liệu, vượt quá giới hạn ${MAX_IMPORT_ROWS} dòng mỗi lần import. Vui lòng chia nhỏ file.` });
+        }
 
         payrolls = records.map((row, index) => {
           const keyMap = buildKeyMap(row);
@@ -444,7 +421,7 @@ class PayrollController {
               "email",
             ]) || "";
 
-          let basicSalaryRaw =
+          const basicSalaryRaw =
             getValueByAliases(row, keyMap, [
               "Lương cơ bản",
               "Luong co ban",
@@ -454,17 +431,17 @@ class PayrollController {
               "basic_salary",
               "Salary",
               "salary",
-            ]) || 0;
+            ]) ?? "";
 
-          let bonusRaw =
+          const bonusRaw =
             getValueByAliases(row, keyMap, [
               "Thưởng",
               "Thuong",
               "Bonus",
               "bonus",
-            ]) || 0;
+            ]) ?? "";
 
-          let deductionsRaw =
+          const deductionsRaw =
             getValueByAliases(row, keyMap, [
               "Khấu trừ",
               "Khau tru",
@@ -472,7 +449,7 @@ class PayrollController {
               "deductions",
               "Deduction",
               "deduction",
-            ]) || 0;
+            ]) ?? "";
 
           const paydateRaw =
             getValueByAliases(row, keyMap, [
@@ -486,27 +463,14 @@ class PayrollController {
               "date",
             ]) || "";
 
-          const parseAmount = (value) => {
-            if (!value && value !== 0) return 0;
-            if (typeof value === 'number') return value;
-            const cleaned = String(value).replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-            return parseFloat(cleaned) || 0;
-          };
-
-          const basicSalary = parseAmount(basicSalaryRaw);
-          const bonus = parseAmount(bonusRaw);
-          const deductions = parseAmount(deductionsRaw);
-          const netSalary = basicSalary + bonus - deductions;
-          const paydate = parseDate(paydateRaw) || new Date();
-
+          // Số tiền và ngày giữ dạng chuỗi gốc, service parse (parseVNNumber/parseFlexibleDate)
           return {
             employeeName: String(employeeName).trim(),
             employeeEmail: String(employeeEmail).trim(),
-            basic_salary: basicSalary,
-            bonus: bonus,
-            deductions: deductions,
-            net_salary: netSalary,
-            paydate: paydate,
+            basic_salary: basicSalaryRaw,
+            bonus: bonusRaw,
+            deductions: deductionsRaw,
+            paydate: paydateRaw,
             rowNumber: index + 2
           };
         });

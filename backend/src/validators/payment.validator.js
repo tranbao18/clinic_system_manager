@@ -5,7 +5,7 @@ export default class PaymentValidator {
     return [
       body('invoice_id').isMongoId(),
       body('method').isString().matches(/^[\p{L}\s.'-]{2,100}$/u),
-      body('amount').isFloat({ gt: 0 }),
+      body('amount').isFloat({ gt: 0 }).toFloat(),
       body('date').isISO8601().toDate()
     ];
   }
@@ -13,7 +13,7 @@ export default class PaymentValidator {
   static updatePayment() {
     return [
       param('id').isMongoId(),
-      body('amount').optional().isFloat({ gt: 0 })
+      body('amount').optional().isFloat({ gt: 0 }).toFloat()
     ];
   }
 }

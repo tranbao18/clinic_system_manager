@@ -49,8 +49,9 @@ class AppointmentService {
         { disabled: false }
       );
 
+      // Không hồi sinh hóa đơn đã bị xóa riêng trước đó (đã hoàn kho)
       await InvoiceDAO.model.updateMany(
-        { appointment_id: appointmentId, disabled: true },
+        { appointment_id: appointmentId, disabled: true, stock_restored: { $ne: true } },
         { disabled: false }
       );
 

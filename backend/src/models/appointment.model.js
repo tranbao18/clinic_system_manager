@@ -18,6 +18,7 @@ const appointmentSchema = new Schema({
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
   disabled: { type: Boolean, default: false },
+  locked_until: { type: Date, select: false }, // khóa ngắn hạn khi tạo hóa đơn
   }, {
   toJSON: {
     transform: (doc, ret) => {

@@ -3,9 +3,21 @@ import { parse } from 'csv-parse/sync';
 
 import dao from '../dao/medicine-import.dao.js';
 import Medicine from '../models/medicine.model.js';
+import MedicineImport from '../models/medicine-import.model.js';
 import Employee from '../models/employee.model.js';
 import MedicineImportService from '../services/medicine-import.service.js';
 import pickFields from '../utils/pick-fields.js';
+import {
+  parseVNNumber,
+  parseFlexibleDate,
+  normalizeHeaderKey,
+  exactMatchRegex,
+  isBlankCell,
+  MAX_IMPORT_ROWS,
+} from '../utils/import-parse.js';
+
+const tooManyRowsError = (count) =>
+  `File có hơn ${MAX_IMPORT_ROWS} dòng dữ liệu${count ? ` (${count} dòng)` : ''}. Vui lòng chia nhỏ file, tối đa ${MAX_IMPORT_ROWS} dòng mỗi lần import.`;
 
 // remaining luôn = quantity khi tạo (DAO tự gán); không cho client tự đặt tồn kho
 const CREATE_FIELDS = ['medicine_id', 'supplier', 'batchcode', 'quantity', 'unit_price', 'expiry_date', 'import_date', 'imported_by'];
@@ -82,60 +94,8 @@ class MedicineImportController {
       const file = req.file;
       let imports = [];
 
-      // Hàm parse date từ nhiều format
-      const parseDate = (dateStr) => {
-        if (!dateStr) return null;
-
-        const str = String(dateStr).trim();
-
-        // Nếu đã là Date object
-        if (dateStr instanceof Date) {
-          return dateStr;
-        }
-
-        // Nếu là number (Excel date serial)
-        if (typeof dateStr === 'number') {
-          // Excel date serial number (số ngày từ 1/1/1900)
-          const excelEpoch = new Date(1899, 11, 30);
-          const date = new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000);
-          return date;
-        }
-
-        // Thử parse ISO format (YYYY-MM-DD)
-        if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-          return new Date(str);
-        }
-
-        // Thử parse d/m/Y format (11/11/2025) - ưu tiên format Việt Nam
-        const dmyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-        if (dmyMatch) {
-          const [, day, month, year] = dmyMatch;
-          // Kiểm tra nếu day > 12 thì chắc chắn là d/m/Y, nếu không thì thử cả hai
-          if (parseInt(day) > 12) {
-            // Chắc chắn là d/m/Y
-            return new Date(year, month - 1, day);
-          } else {
-            // Có thể là d/m/Y hoặc m/d/Y, ưu tiên d/m/Y (format Việt Nam)
-            return new Date(year, month - 1, day);
-          }
-        }
-
-        // Fallback: thử parse với Date constructor
-        const parsed = new Date(str);
-        if (!isNaN(parsed.getTime())) {
-          return parsed;
-        }
-
-        return null;
-      };
-
-      // Hàm chuẩn hóa key header: bỏ dấu tiếng Việt, khoảng trắng, ký tự đặc biệt, về lowercase
-      const normalizeKey = (key = "") =>
-        String(key)
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, "");
+      // Chuẩn hóa key header: bỏ dấu tiếng Việt (kể cả "đ"), khoảng trắng, ký tự đặc biệt
+      const normalizeKey = normalizeHeaderKey;
 
       // Hàm chuẩn hóa tên để so sánh (bỏ dấu, lowercase, trim)
       const normalizeName = (str = "") =>
@@ -332,58 +292,17 @@ class MedicineImportController {
           const medicineName = (colIndex.medicineName !== -1 ? row[colIndex.medicineName] : "") || "";
           const supplier = (colIndex.supplier !== -1 ? row[colIndex.supplier] : "") || "";
           const batchcode = (colIndex.batchcode !== -1 ? row[colIndex.batchcode] : "") || "";
-          const quantityRaw = (colIndex.quantity !== -1 ? row[colIndex.quantity] : "") || 0;
-          const unitPriceRaw = (colIndex.unitPrice !== -1 ? row[colIndex.unitPrice] : "") || 0;
-          const expiryDateRaw = (colIndex.expiryDate !== -1 ? row[colIndex.expiryDate] : "") || "";
-          const importDateRaw = (colIndex.importDate !== -1 ? row[colIndex.importDate] : "") || "";
           const importerName = (colIndex.importerName !== -1 ? row[colIndex.importerName] : "") || "";
+          // Giữ nguyên giá trị ô số/ngày (có thể là serial Excel) để service parse và báo lỗi theo dòng
+          const quantityRaw = colIndex.quantity !== -1 ? row[colIndex.quantity] : "";
+          const unitPriceRaw = colIndex.unitPrice !== -1 ? row[colIndex.unitPrice] : "";
+          const expiryDateRaw = colIndex.expiryDate !== -1 ? row[colIndex.expiryDate] : "";
+          const importDateRaw = colIndex.importDate !== -1 ? row[colIndex.importDate] : "";
 
           // Các cột để tạo medicine mới nếu chưa có
           const categoryStr = (colIndex.category !== -1 ? row[colIndex.category] : "") || "";
           const unit = (colIndex.unit !== -1 ? row[colIndex.unit] : "") || "";
-          const priceRaw = (colIndex.price !== -1 ? row[colIndex.price] : "") || 0;
-
-          // Xử lý số lượng: loại bỏ dấu phẩy phân cách hàng nghìn và parse
-          let quantity = 0;
-          if (quantityRaw !== undefined && quantityRaw !== null && quantityRaw !== '') {
-            if (typeof quantityRaw === 'number') {
-              quantity = quantityRaw;
-            } else {
-              const quantityStr = String(quantityRaw).trim();
-              // Loại bỏ dấu phẩy phân cách hàng nghìn, khoảng trắng và các ký tự không phải số
-              const cleanedQuantity = quantityStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              quantity = parseFloat(cleanedQuantity) || 0;
-            }
-          }
-
-          // Debug log cho 3 dòng đầu nếu quantity = 0
-          if (quantity === 0 && imports.length < 3) {
-            console.log(`⚠️ Row ${i + 1} - quantityRaw:`, quantityRaw, 'quantity:', quantity, 'colIndex.quantity:', colIndex.quantity);
-          }
-
-          // Xử lý giá nhập: loại bỏ dấu phẩy phân cách hàng nghìn
-          let unitPrice = 0;
-          if (unitPriceRaw !== undefined && unitPriceRaw !== null && unitPriceRaw !== '') {
-            if (typeof unitPriceRaw === 'number') {
-              unitPrice = unitPriceRaw;
-            } else {
-              const priceStr = String(unitPriceRaw).trim();
-              const cleanedPrice = priceStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              unitPrice = parseFloat(cleanedPrice) || 0;
-            }
-          }
-
-          // Xử lý giá bán (để tạo medicine mới)
-          let price = 0;
-          if (priceRaw !== undefined && priceRaw !== null && priceRaw !== '') {
-            if (typeof priceRaw === 'number') {
-              price = priceRaw;
-            } else {
-              const priceStr = String(priceRaw).trim();
-              const cleanedPrice = priceStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              price = parseFloat(cleanedPrice) || 0;
-            }
-          }
+          const priceRaw = colIndex.price !== -1 ? row[colIndex.price] : "";
 
           // Xử lý danh mục (có thể là string phân cách bằng dấu phẩy)
           const categories = categoryStr
@@ -391,29 +310,34 @@ class MedicineImportController {
             : [];
 
           // Bỏ qua các dòng trống hoàn toàn
-          if (!medicineName && !supplier && !batchcode && !quantity && !unitPrice) {
+          const normMedicineName = normalizeName(medicineName);
+          if (!normMedicineName && !String(supplier).trim() && !String(batchcode).trim() &&
+            isBlankCell(quantityRaw) && isBlankCell(unitPriceRaw)) {
             continue;
           }
 
           // Bỏ qua nếu đây thực chất là dòng header bị lọt vào
-          const normMedicineName = normalizeName(medicineName);
-          if (!normMedicineName || normMedicineName === normalizeName("Tên thuốc") || normMedicineName === normalizeName("Thuốc")) {
+          if (normMedicineName === normalizeName("Tên thuốc") || normMedicineName === normalizeName("Thuốc")) {
             continue;
+          }
+
+          if (imports.length >= MAX_IMPORT_ROWS) {
+            return res.status(400).json({ error: tooManyRowsError() });
           }
 
           imports.push({
             medicineName: String(medicineName).trim(),
             supplier: String(supplier).trim(),
             batchcode: String(batchcode).trim(),
-            quantity: quantity,
-            unit_price: unitPrice,
+            quantity: quantityRaw,
+            unit_price: unitPriceRaw,
             expiry_date: expiryDateRaw,
             import_date: importDateRaw,
             importerName: String(importerName).trim(),
             // Thông tin để tạo medicine mới
             category: categories,
             unit: String(unit).trim(),
-            price: price,
+            price: priceRaw,
             // i là index 0-based trong sheet, +1 để ra số dòng thực tế trong Excel
             rowNumber: i + 1
           });
@@ -427,35 +351,28 @@ class MedicineImportController {
           trim: true
         });
 
+        const dataCount = records.filter((r) => Object.values(r).some((v) => !isBlankCell(v))).length;
+        if (dataCount > MAX_IMPORT_ROWS) {
+          return res.status(400).json({ error: tooManyRowsError(dataCount) });
+        }
+
         imports = records.map((row, index) => {
           const medicineName = row['Tên thuốc'] || row['Thuốc'] || row['Medicine'] || row['medicine'] || '';
           const supplier = row['Nhà cung cấp'] || row['Supplier'] || row['supplier'] || '';
           const batchcode = row['Mã lô'] || row['Batchcode'] || row['batchcode'] || '';
-          const quantity = row['Số lượng'] || row['Quantity'] || row['quantity'] || 0;
+          const quantity = row['Số lượng'] || row['Quantity'] || row['quantity'] || '';
 
           // Thông tin để tạo medicine nếu chưa có
           const categoryStr = row['Danh mục'] || row['Category'] || row['category'] || '';
           const unit = row['Đơn vị'] || row['Unit'] || row['unit'] || '';
 
           // Tìm giá bán (khác với giá nhập)
-          let priceRaw = 0;
+          let priceRaw = '';
           const priceKeys = ['Giá bán', 'Giá', 'Price', 'price', 'Gia ban', 'gia ban'];
           for (const key of priceKeys) {
             if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
               priceRaw = row[key];
               break;
-            }
-          }
-
-          // Xử lý giá bán
-          let price = 0;
-          if (priceRaw !== undefined && priceRaw !== null && priceRaw !== '') {
-            if (typeof priceRaw === 'number') {
-              price = priceRaw;
-            } else {
-              const priceStr = String(priceRaw).trim();
-              const cleanedPrice = priceStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              price = parseFloat(cleanedPrice) || 0;
             }
           }
 
@@ -465,7 +382,7 @@ class MedicineImportController {
             : [];
 
           // Tìm giá nhập với nhiều tên cột có thể (ưu tiên "Giá nhập", tránh nhầm với "Giá bán")
-          let unitPriceRaw = 0;
+          let unitPriceRaw = '';
           const importPriceKeys = ['Giá nhập', 'Gia nhap', 'Unit Price', 'unit_price', 'Import Price', 'import_price'];
           for (const key of importPriceKeys) {
             if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
@@ -475,7 +392,7 @@ class MedicineImportController {
           }
 
           // Nếu không tìm thấy, tìm trong tất cả keys có chứa "giá nhập" hoặc "import price"
-          if (!unitPriceRaw || unitPriceRaw === 0) {
+          if (!unitPriceRaw) {
             const allKeys = Object.keys(row);
             const priceKey = allKeys.find(key => {
               const lowerKey = key.toLowerCase();
@@ -488,35 +405,24 @@ class MedicineImportController {
             }
           }
 
-          // Xử lý giá nhập: loại bỏ dấu phẩy phân cách hàng nghìn
-          let unitPrice = 0;
-          if (unitPriceRaw !== undefined && unitPriceRaw !== null && unitPriceRaw !== '') {
-            if (typeof unitPriceRaw === 'number') {
-              unitPrice = unitPriceRaw;
-            } else {
-              const priceStr = String(unitPriceRaw).trim();
-              const cleanedPrice = priceStr.replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              unitPrice = parseFloat(cleanedPrice) || 0;
-            }
-          }
-
           const expiryDateRaw = row['Hạn sử dụng'] || row['Expiry Date'] || row['expiry_date'] || '';
           const importDateRaw = row['Ngày nhập'] || row['Import Date'] || row['import_date'] || '';
           const importerName = row['Người nhập'] || row['Importer'] || row['imported_by'] || '';
 
+          // Số và ngày giữ dạng chuỗi gốc, service parse (parseVNNumber/parseFlexibleDate)
           return {
             medicineName: String(medicineName).trim(),
             supplier: String(supplier).trim(),
             batchcode: String(batchcode).trim(),
-            quantity: parseFloat(quantity) || 0,
-            unit_price: unitPrice,
+            quantity,
+            unit_price: unitPriceRaw,
             expiry_date: expiryDateRaw,
             import_date: importDateRaw,
             importerName: String(importerName).trim(),
             // Thông tin để tạo medicine
             category: categories,
             unit: String(unit).trim(),
-            price: price,
+            price: priceRaw,
             rowNumber: index + 2
           };
         });
@@ -543,11 +449,10 @@ class MedicineImportController {
   };
 
   /**
-   * Xử lý file để cập nhật số lượng theo medicine_id
+   * Nhập thêm tồn kho từ file: mỗi dòng tạo một lô (medicine import) mới.
    * File hỗ trợ: Excel (.xlsx, .xls) hoặc CSV (.csv)
-   * Kỳ vọng file có cột: medicine_id (ObjectId string) và quantity (number)
-   *
-   * NOTE: Hiện tại hàm này chỉ parse và validate dữ liệu, trả về danh sách bản ghi để dev triển khai logic DB (tạo medicine import hoặc cập nhật remaining).
+   * Cột bắt buộc: medicine_id hoặc Tên thuốc, Mã lô, Số lượng, Giá nhập, Hạn sử dụng.
+   * Lô đã tồn tại (cùng thuốc + mã lô, chưa bị xóa) sẽ bị bỏ qua → upload lại cùng file không nhân đôi tồn kho.
    */
   async updateQuantities(req, res) {
     try {
@@ -558,40 +463,14 @@ class MedicineImportController {
       const file = req.file;
       const parsedRows = [];
 
-      const parseDate = (dateStr) => {
-        if (!dateStr) return null;
-        const str = String(dateStr).trim();
-        if (dateStr instanceof Date) return dateStr;
-        if (typeof dateStr === 'number') {
-          const excelEpoch = new Date(1899, 11, 30);
-          return new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000);
-        }
-        if (/^\d{4}-\d{2}-\d{2}/.test(str)) return new Date(str);
-        const dmyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-        if (dmyMatch) {
-          const [, day, month, year] = dmyMatch;
-          return new Date(year, month - 1, day);
-        }
-        const parsed = new Date(str);
-        return !isNaN(parsed.getTime()) ? parsed : null;
-      };
-
-      const normalizeKey = (key = "") =>
-        String(key)
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, "");
+      const normalizeKey = normalizeHeaderKey;
 
       const normalizeName = (str = "") =>
         String(str)
           .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[̀-ͯ]/g, "")
           .toLowerCase()
           .trim();
-
-      const escapeRegex = (str = "") =>
-        String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
       // Read Excel
       if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
@@ -771,46 +650,14 @@ class MedicineImportController {
           const medicineName = colIndex.medicineName !== -1 ? String(row[colIndex.medicineName] || "").trim() : "";
           const supplier = colIndex.supplier !== -1 ? String(row[colIndex.supplier] || "").trim() : "";
           const batchcode = colIndex.batchcode !== -1 ? String(row[colIndex.batchcode] || "").trim() : "";
-          const quantityRaw = colIndex.quantity !== -1 ? row[colIndex.quantity] : 0;
-          const unitPriceRaw = colIndex.unitPrice !== -1 ? row[colIndex.unitPrice] : 0;
+          // Giữ nguyên giá trị ô số/ngày (có thể là serial Excel), parse + validate ở bước xử lý bên dưới
+          const quantityRaw = colIndex.quantity !== -1 ? row[colIndex.quantity] : "";
+          const unitPriceRaw = colIndex.unitPrice !== -1 ? row[colIndex.unitPrice] : "";
           const expiryDateRaw = colIndex.expiryDate !== -1 ? row[colIndex.expiryDate] : "";
           const importDateRaw = colIndex.importDate !== -1 ? row[colIndex.importDate] : "";
           const importerName = colIndex.importerName !== -1 ? String(row[colIndex.importerName] || "").trim() : "";
-          const categoryStr = colIndex.category !== -1 ? String(row[colIndex.category] || "") : "";
-          const unit = colIndex.unit !== -1 ? String(row[colIndex.unit] || "") : "";
-          const priceRaw = colIndex.price !== -1 ? row[colIndex.price] : 0;
 
-          // parse numbers
-          let quantity = 0;
-          if (quantityRaw !== undefined && quantityRaw !== null && quantityRaw !== '') {
-            if (typeof quantityRaw === 'number') quantity = quantityRaw;
-            else {
-              const cleaned = String(quantityRaw).replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              quantity = parseFloat(cleaned) || 0;
-            }
-          }
-
-          let unit_price = 0;
-          if (unitPriceRaw !== undefined && unitPriceRaw !== null && unitPriceRaw !== '') {
-            if (typeof unitPriceRaw === 'number') unit_price = unitPriceRaw;
-            else {
-              const cleaned = String(unitPriceRaw).replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              unit_price = parseFloat(cleaned) || 0;
-            }
-          }
-
-          let price = 0;
-          if (priceRaw !== undefined && priceRaw !== null && priceRaw !== '') {
-            if (typeof priceRaw === 'number') price = priceRaw;
-            else {
-              const cleaned = String(priceRaw).replace(/,/g, '').replace(/\s/g, '').replace(/[^\d.]/g, '');
-              price = parseFloat(cleaned) || 0;
-            }
-          }
-
-          const categories = categoryStr ? String(categoryStr).split(',').map(c => c.trim()).filter(Boolean) : [];
-
-          if (!medicineId && !medicineName && !supplier && !batchcode && !quantity && !unit_price) {
+          if (!medicineId && !medicineName && !supplier && !batchcode && isBlankCell(quantityRaw) && isBlankCell(unitPriceRaw)) {
             continue;
           }
 
@@ -820,19 +667,20 @@ class MedicineImportController {
             continue;
           }
 
+          if (parsedRows.length >= MAX_IMPORT_ROWS) {
+            return res.status(400).json({ error: tooManyRowsError() });
+          }
+
           parsedRows.push({
             medicine_id: medicineId,
             medicineName,
             supplier,
             batchcode,
-            quantity,
-            unit_price,
+            quantity: quantityRaw,
+            unit_price: unitPriceRaw,
             expiry_date: expiryDateRaw,
             import_date: importDateRaw,
             importerName,
-            category: categories,
-            unit,
-            price,
             rowNumber: i + 1
           });
         }
@@ -858,26 +706,21 @@ class MedicineImportController {
           const expiryKey = findKey(["hansudung", "expirydate", "expiry_date"]);
           const importDateKey = findKey(["ngaynhap", "importdate", "import_date"]);
           const importerKey = findKey(["nguoinhap", "importer", "importedby"]);
-          const categoryKey = findKey(["danhmuc", "category"]);
-          const unitKey = findKey(["donvi", "unit"]);
-          const priceKey = findKey(["giaban", "price"]);
 
           const medicineId = medicineIdKey ? String(row[medicineIdKey] || "").trim() : "";
           const medicineName = nameKey ? String(row[nameKey] || "").trim() : "";
           const supplier = supplierKey ? String(row[supplierKey] || "").trim() : "";
           const batchcode = batchKey ? String(row[batchKey] || "").trim() : "";
-          const quantity = qtyKey ? parseFloat(String(row[qtyKey] || "").replace(/,/g, "")) || 0 : 0;
-          const unit_price = unitPriceKey ? parseFloat(String(row[unitPriceKey] || "").replace(/,/g, "")) || 0 : 0;
+          const quantity = qtyKey ? row[qtyKey] : "";
+          const unit_price = unitPriceKey ? row[unitPriceKey] : "";
           const expiry_date = expiryKey ? row[expiryKey] : "";
           const import_date = importDateKey ? row[importDateKey] : "";
           const importerName = importerKey ? String(row[importerKey] || "").trim() : "";
-          const categoryStr = categoryKey ? String(row[categoryKey] || "") : "";
-          const unit = unitKey ? String(row[unitKey] || "") : "";
-          const price = priceKey ? parseFloat(String(row[priceKey] || "").replace(/,/g, "")) || 0 : 0;
 
-          const categories = categoryStr ? categoryStr.split(',').map(c => c.trim()).filter(Boolean) : [];
-
-          if (!medicineId && !medicineName && !supplier && !batchcode && !quantity && !unit_price) continue;
+          if (!medicineId && !medicineName && !supplier && !batchcode && isBlankCell(quantity) && isBlankCell(unit_price)) continue;
+          if (parsedRows.length >= MAX_IMPORT_ROWS) {
+            return res.status(400).json({ error: tooManyRowsError() });
+          }
           parsedRows.push({
             medicine_id: medicineId,
             medicineName,
@@ -888,9 +731,6 @@ class MedicineImportController {
             expiry_date,
             import_date,
             importerName,
-            category: categories,
-            unit,
-            price,
             rowNumber: i + 2
           });
         }
@@ -898,48 +738,87 @@ class MedicineImportController {
         return res.status(400).json({ error: 'Định dạng file không được hỗ trợ. Vui lòng sử dụng file Excel (.xlsx, .xls) hoặc CSV (.csv)' });
       }
 
-      // Validate & process rows in lenient update mode: accept minimal rows (medicine_id or name + quantity)
-      console.log("updateQuantities: parsedRows sample:", parsedRows.slice(0, 10));
+      // Mỗi dòng hợp lệ tạo một lô mới; dòng thiếu/sai dữ liệu báo lỗi, lô đã tồn tại thì bỏ qua
       const results = { success: 0, failed: 0, skipped: 0, errors: [] };
+      const oidRegex = /^[a-fA-F0-9]{24}$/;
       for (let idx = 0; idx < parsedRows.length; idx++) {
         const importData = parsedRows[idx];
+        const rowNum = importData.rowNumber || idx + 1;
         try {
-          const rowNum = importData.rowNumber || idx + 1;
-
           // Must have medicine_id or medicineName
           if (!importData.medicine_id && !importData.medicineName) {
             throw new Error(`Thiếu medicine_id hoặc Tên thuốc (dòng ${rowNum})`);
           }
 
-          // Quantity must be > 0
-          const quantity = Number(importData.quantity) || 0;
-          if (quantity <= 0) {
-            throw new Error(`Số lượng phải lớn hơn 0 (dòng ${rowNum})`);
+          const quantity = parseVNNumber(importData.quantity);
+          if (!Number.isInteger(quantity) || quantity <= 0) {
+            throw new Error(`Số lượng phải là số nguyên > 0, nhận được "${importData.quantity ?? ''}" (dòng ${rowNum})`);
           }
 
-          // Resolve medicine: prefer medicine_id if valid ObjectId; otherwise find by name
-          const oidRegex = /^[a-fA-F0-9]{24}$/;
+          const batchcode = String(importData.batchcode || "").trim();
+          if (!batchcode) {
+            throw new Error(`Mã lô không được để trống (dòng ${rowNum})`);
+          }
+
+          // Giá nhập dùng cho giá trị tồn kho, không lấy giá bán của thuốc thay thế
+          const unit_price = parseVNNumber(importData.unit_price);
+          if (!Number.isFinite(unit_price) || unit_price <= 0) {
+            throw new Error(`Giá nhập phải > 0, nhận được "${importData.unit_price ?? ''}" (dòng ${rowNum})`);
+          }
+
+          if (isBlankCell(importData.expiry_date)) {
+            throw new Error(`Hạn sử dụng không được để trống (dòng ${rowNum})`);
+          }
+          const expiryDate = parseFlexibleDate(importData.expiry_date);
+          if (!expiryDate) {
+            throw new Error(`Hạn sử dụng không hợp lệ "${importData.expiry_date}", dùng dd/mm/yyyy hoặc yyyy-mm-dd (dòng ${rowNum})`);
+          }
+
+          let importDate = new Date();
+          if (!isBlankCell(importData.import_date)) {
+            importDate = parseFlexibleDate(importData.import_date);
+            if (!importDate) {
+              throw new Error(`Ngày nhập không hợp lệ "${importData.import_date}", dùng dd/mm/yyyy hoặc yyyy-mm-dd (dòng ${rowNum})`);
+            }
+          }
+
+          // Resolve medicine: prefer medicine_id if valid ObjectId; otherwise find by name (bỏ qua thuốc đã xóa)
           let medicine = null;
           if (importData.medicine_id && oidRegex.test(String(importData.medicine_id))) {
-            medicine = await Medicine.findById(String(importData.medicine_id));
+            medicine = await Medicine.findOne({ _id: String(importData.medicine_id), disabled: false });
             if (!medicine) {
               throw new Error(`Không tìm thấy medicine với id ${importData.medicine_id} (dòng ${rowNum})`);
             }
           } else if (importData.medicineName) {
             medicine = await Medicine.findOne({
-              name: { $regex: new RegExp(`^${escapeRegex(importData.medicineName)}$`, "i") },
+              name: exactMatchRegex(importData.medicineName),
               disabled: false
-            });
+            }).sort({ created_at: 1, _id: 1 });
             if (!medicine) {
               throw new Error(`Không tìm thấy thuốc với tên "${importData.medicineName}" (dòng ${rowNum}). Vui lòng cung cấp medicine_id hoặc tạo thuốc trước.`);
             }
+          } else {
+            throw new Error(`medicine_id "${importData.medicine_id}" không hợp lệ (dòng ${rowNum})`);
           }
 
-          const supplier = importData.supplier && String(importData.supplier).trim() ? String(importData.supplier).trim() : "Bulk update";
-          const batchcode = importData.batchcode && String(importData.batchcode).trim() ? String(importData.batchcode).trim() : `BULK-${Date.now()}-${rowNum}`;
-          const unit_price = importData.unit_price !== undefined && importData.unit_price !== null ? Number(importData.unit_price) || 0 : 0;
-          const expiryDate = parseDate(importData.expiry_date) || new Date();
-          const importDate = parseDate(importData.import_date) || new Date();
+          // Lô đã có (cùng thuốc + mã lô) → bỏ qua để upload lại cùng file không cộng trùng tồn kho
+          const existed = await MedicineImport.findOne({
+            medicine_id: medicine._id,
+            batchcode: exactMatchRegex(batchcode),
+            disabled: false
+          });
+          if (existed) {
+            results.skipped++;
+            results.errors.push({
+              row: rowNum,
+              medicine: importData.medicineName || importData.medicine_id,
+              error: `Lô "${batchcode}" của thuốc này đã tồn tại, bỏ qua để tránh cộng trùng tồn kho (dòng ${rowNum})`,
+              type: 'skipped'
+            });
+            continue;
+          }
+
+          const supplier = String(importData.supplier || "").trim() || "Bulk update";
           const importedBy = (importData.importerName ? (await Employee.findOne({ fullname: importData.importerName })) : null)?._id || req.user?.employee_id || null;
 
           await dao.create({
@@ -957,7 +836,7 @@ class MedicineImportController {
           results.success++;
         } catch (err) {
           results.failed++;
-          results.errors.push({ row: importData.rowNumber || idx + 1, medicine: importData.medicineName || importData.medicine_id, error: err.message || String(err), type: 'failed' });
+          results.errors.push({ row: rowNum, medicine: importData.medicineName || importData.medicine_id, error: err.message || String(err), type: 'failed' });
         }
       }
 
