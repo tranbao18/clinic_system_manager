@@ -30,7 +30,6 @@ export async function getMedicalRecords(): Promise<MedicalRecord[]> {
 
 export async function getMedicalRecordsByPatientId(patientId: string): Promise<MedicalRecord[]> {
     const headers = (getAuthHeaderClient() as Record<string, string>);
-    try { console.debug("🔁 getMedicalRecordsByPatientId headers:", headers); } catch (e) { }
 
     const res = await fetch(`/api/medical-records/patient/${patientId}`, {
         cache: "no-store",
@@ -65,7 +64,7 @@ export async function createMedicalRecord(data: Partial<MedicalRecord>): Promise
     };
     // Debug: log payload and headers to help troubleshoot server rejections
     try {
-        console.debug("🔁 createMedicalRecord payload:", { data, headers });
+        console.debug("🔁 createMedicalRecord payload:", { data });
     } catch (e) { }
 
     const res = await fetch("/api/medical-records", {

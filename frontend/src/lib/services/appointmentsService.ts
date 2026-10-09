@@ -31,7 +31,6 @@ export interface UpdateAppointmentData {
 export async function getAppointments(): Promise<Appointment[]> {
     try {
         const headers = getSafeAuthHeaders() as Record<string, string>;
-        try { console.debug("🔁 getAppointments headers:", headers); } catch (e) { }
 
         const res = await fetch("/api/appointments", {
             cache: "no-store",
@@ -106,7 +105,6 @@ export async function deleteAppointment(id: string): Promise<void> {
 
     console.log("🔄 [DELETE APPOINTMENT] Starting deletion");
     console.log("🔄 [DELETE APPOINTMENT] URL:", url);
-    console.log("🔄 [DELETE APPOINTMENT] Headers:", headers);
 
     const res = await fetch(url, {
         method: "DELETE",

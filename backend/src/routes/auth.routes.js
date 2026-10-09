@@ -4,7 +4,8 @@ const router = express.Router();
 import authCtrl from '../controllers/auth.controller.js';
 import auth from '../../middleware/auth.middleware.js';
 
-router.post('/register', authCtrl.register);
+// Chỉ Admin được tạo tài khoản nhân viên
+router.post('/register', auth('Admin'), authCtrl.register);
 router.post('/register-patient', authCtrl.registerPatient);
 
 router.post('/login', authCtrl.login);

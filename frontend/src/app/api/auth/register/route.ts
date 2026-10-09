@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
+import { getAuthHeaderServer } from "@/lib/authHeaderServer";
 
 // TỰ VIẾT
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    // Backend yêu cầu token Admin cho /register
+    const authHeaders = await getAuthHeaderServer();
     const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify(body),
     });
 

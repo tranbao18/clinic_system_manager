@@ -285,7 +285,7 @@ class UserDAO extends BaseDAO {
           // Không throw lỗi để không block luồng tạo user; ghi log để admin check
           console.error("❌ Lỗi khi gửi tài khoản về email nhân viên:", err.message || err);
           console.error("   Chi tiết:", err);
-          console.warn(`⚠️  Tài khoản đã được tạo nhưng không gửi được email. Username: ${newUsername}, Password: ${newPassword}`);
+          console.warn(`⚠️  Tài khoản đã được tạo nhưng không gửi được email. Username: ${newUsername}`);
         }
       } else {
         console.warn("⚠️  Nhân viên không có email, không gửi được tài khoản nhân viên.");
@@ -293,10 +293,8 @@ class UserDAO extends BaseDAO {
 
       const user = userDoc.toObject();
       delete user.password_hash;
+      // Trả mật khẩu cho Admin (route /register yêu cầu quyền Admin) để báo cho nhân viên không có email
       user.generated_password = newPassword;
-
-      console.log(newUsername);
-      console.log(newPassword);
 
       return user;
     } catch (e) {
@@ -308,10 +306,15 @@ class UserDAO extends BaseDAO {
   async login(username, password) {
     try {
       if (!usersModel) throw new Error('Users DAO has not been initialized. Call injectDB(conn) first.');
-      const user = await usersModel.findOne({ username }).exec();
-      if (!user) throw new Error('Username hoặc password không đúng');
-      const match = await bcrypt.compare(password, user.password_hash);
-      if (!match) throw new Error('Username hoặc password không đúng');
+      const invalid = () => Object.assign(new Error('Username hoặc password không đúng'), { status: 401 });
+
+      const user = await usersModel.findOne({ username: String(username) }).exec();
+      if (!user) throw invalid();
+      const match = await bcrypt.compare(String(password), user.password_hash);
+      if (!match) throw invalid();
+      if (user.disabled) {
+        throw Object.assign(new Error('Tài khoản đã bị vô hiệu hóa'), { status: 403 });
+      }
 
       // Tạo Token
       const payload = { sub: user._id.toString(), username: user.username, role: user.role };
@@ -424,8 +427,8 @@ class UserDAO extends BaseDAO {
     if (!usersModel) throw new Error("Users DAO has not been initialized. Call injectDB(conn) first.");
 
     // Tìm user theo username và populate employee info
-    const user = await usersModel.findOne({ username }).populate("employee_id").exec();
-    if (!user) throw new Error("Username không tồn tại");
+    const user = await usersModel.findOne({ username: String(username) }).populate("employee_id").exec();
+    if (!user || user.disabled) throw new Error("Username không tồn tại");
 
     // Kiểm tra email
     if (!user.employee_id || !user.employee_id.email) {

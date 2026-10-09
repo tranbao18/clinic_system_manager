@@ -82,7 +82,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
         const backendUrl = `${APPOINTMENTS_URL}/${id}?hard=true`;
         console.log(`🔄 [API ROUTE] Proxying DELETE to backend: ${backendUrl}`);
-        console.log(`🔄 [API ROUTE] Headers:`, headers);
 
         const res = await fetch(backendUrl, { method: "DELETE", headers });
 

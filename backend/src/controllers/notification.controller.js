@@ -12,11 +12,6 @@ class NotificationController {
 
   async findAll(req, res) {
     try {
-      console.log('🔍 [NotificationController] findAll called', {
-        userPayload: req.user,
-        authHeader: req.headers ? req.headers.authorization || req.headers.Authorization : undefined,
-        query: req.query,
-      });
       const userId = req.user.sub || req.user.userId || req.user._id;
       const userRole = req.user.role;
 
@@ -43,11 +38,6 @@ class NotificationController {
   // Kế thừa
   async getUnreadCount(req, res) {
     try {
-      console.log('🔍 [NotificationController] getUnreadCount called', {
-        userPayload: req.user,
-        authHeader: req.headers ? req.headers.authorization || req.headers.Authorization : undefined,
-        query: req.query,
-      });
       const userId = req.user.sub || req.user.userId || req.user._id;
       const userRole = req.user.role;
 

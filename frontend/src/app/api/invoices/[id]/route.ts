@@ -30,7 +30,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const url = `${API_URL}/api/invoices/${id}`;
 
     console.log(`🌐 [GET /api/invoices/${id}] Calling backend: ${url}`);
-    console.log(`🔑 [GET /api/invoices/${id}] Headers sent:`, headers);
 
     const res = await fetch(url, {
       cache: "no-store",

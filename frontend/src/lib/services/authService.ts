@@ -17,7 +17,7 @@ const AuthService = {
   ) {
     const res = await fetch(`${BASE_URL}/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaderClient() },
       body: JSON.stringify({ role, employee }),
     });
 

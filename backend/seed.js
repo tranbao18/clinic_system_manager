@@ -13,6 +13,14 @@ const seedAdmin = async () => {
       process.exit(1);
     }
 
+    // Không hardcode mật khẩu: truyền qua tham số hoặc biến môi trường
+    // Cách dùng: node seed.js <mật_khẩu>   hoặc   SEED_ADMIN_PASSWORD=... node seed.js
+    const adminPassword = process.argv[2] || process.env.SEED_ADMIN_PASSWORD;
+    if (!adminPassword || adminPassword.length < 8) {
+      console.error('Cần truyền mật khẩu admin (>= 8 ký tự): node seed.js <mật_khẩu>');
+      process.exit(1);
+    }
+
     console.log('Connecting to MongoDB...');
     await mongoose.connect(mongoUri, {
       dbName: process.env.MONGO_DB_NAME
@@ -20,7 +28,6 @@ const seedAdmin = async () => {
     console.log(`Connected to MongoDB (Database: ${process.env.MONGO_DB_NAME}).`);
 
     const adminUsername = 'admin';
-    const adminPassword = 'REDACTED';
 
     let adminUser = await User.findOne({ username: adminUsername });
     const salt = await bcrypt.genSalt(10);
@@ -43,7 +50,6 @@ const seedAdmin = async () => {
     console.log(`==========================================`);
     console.log(`Admin user ready!`);
     console.log(`Username: ${adminUsername}`);
-    console.log(`Password: ${adminPassword}`);
     console.log(`Saved to Database: ${adminUser.db.name}, Collection: ${adminUser.collection.name}`);
     console.log(`==========================================`);
   } catch (error) {

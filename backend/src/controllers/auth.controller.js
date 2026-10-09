@@ -4,10 +4,22 @@ import UserDAO from '../dao/user.dao.js';
 import EmployeeDAO from '../dao/employee.dao.js';
 import PatientDAO from '../dao/patient.dao.js';
 
+const STAFF_ROLES = ['Admin', 'Doctor', 'Nurse', 'Receptionist', 'Accountant', 'Pharmacist'];
+
+// Chặn NoSQL injection: chỉ chấp nhận chuỗi không rỗng (vd: không cho {"$ne": null})
+const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== '';
+
 class AuthController {
   async register(req, res) {
     try {
-      const { role, employee } = req.body;
+      const { role, employee } = req.body || {};
+
+      if (!STAFF_ROLES.includes(role)) {
+        return res.status(400).json({ error: 'Vai trò không hợp lệ' });
+      }
+      if (!employee || typeof employee !== 'object' || Array.isArray(employee)) {
+        return res.status(400).json({ error: 'Thiếu thông tin nhân viên' });
+      }
 
       const createdEmployee = await EmployeeDAO.createEmployee(employee);
 
@@ -29,8 +41,8 @@ class AuthController {
   async login(req, res) {
 
     try {
-      const { username, password } = req.body;
-      if (!username || !password) return res.status(400).json({ message: 'Cần nhập đủ Username và Password' });
+      const { username, password } = req.body || {};
+      if (!isNonEmptyString(username) || !isNonEmptyString(password)) return res.status(400).json({ message: 'Cần nhập đủ Username và Password' });
       const result = await UserDAO.login(username, password);
 
       // Lấy thông tin nhân viên vừa đăng nhập
@@ -39,8 +51,8 @@ class AuthController {
 
       return res.status(200).json({ user: result.user, token: result.token, employee: employeeObj });
     } catch (err) {
-      console.error('AuthController.login error:', err);
-      return res.status(500).json({ error: err.message });
+      console.error('AuthController.login error:', err.message);
+      return res.status(err.status || 500).json({ error: err.message, message: err.message });
     }
   };
 
@@ -61,9 +73,9 @@ class AuthController {
 
   async forgotPassword(req, res) {
     try {
-      const { username, email } = req.body;
+      const { username, email } = req.body || {};
 
-      if (!username || !email) {
+      if (!isNonEmptyString(username) || !isNonEmptyString(email)) {
         return res.status(400).json({ error: 'Username và email là bắt buộc' });
       }
 
@@ -190,8 +202,8 @@ class AuthController {
 
   async loginPatient(req, res) {
     try {
-      const { username, password } = req.body;
-      if (!username || !password) return res.status(400).json({ message: 'Cần nhập đủ Username và Password' });
+      const { username, password } = req.body || {};
+      if (!isNonEmptyString(username) || !isNonEmptyString(password)) return res.status(400).json({ message: 'Cần nhập đủ Username và Password' });
       const result = await UserDAO.login(username, password);
 
       // Lấy thông tin nhân viên vừa đăng nhập
@@ -200,8 +212,8 @@ class AuthController {
 
       return res.status(200).json({ user: result.user, token: result.token, patient: patientObj });
     } catch (err) {
-      console.error('AuthController.login error:', err);
-      return res.status(500).json({ error: err.message });
+      console.error('AuthController.loginPatient error:', err.message);
+      return res.status(err.status || 500).json({ error: err.message, message: err.message });
     }
   };
 
